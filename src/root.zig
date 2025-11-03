@@ -6,6 +6,8 @@ pub const std_options = .{
     .log_level = .info,
 };
 
+const INDENT = "  ";
+
 pub const DateFilters = struct {
     since: ?[10]u8 = null,
     until: ?[10]u8 = null,
@@ -316,50 +318,82 @@ fn writeJson(
     summaries: []DailySummary,
     totals: *const SummaryTotals,
 ) !void {
-    try writer.writeAll("{\"days\":[");
-    for (summaries, 0..) |summary, index| {
-        if (index != 0) try writer.writeAll(",");
-        try writeSummaryJson(writer, summary);
+    try writer.writeAll("{");
+    try writeKeyPrefix(writer, 1, "days");
+    try writer.writeAll("[");
+    if (summaries.len != 0) {
+        for (summaries, 0..) |summary, index| {
+            try writeIndent(writer, 2);
+            try writeSummaryJson(writer, summary, 2);
+            if (index + 1 != summaries.len) try writer.writeAll(",");
+        }
+        try writeIndent(writer, 1);
     }
-    try writer.writeAll("],\"total\":");
-    try writeTotalsJson(writer, totals);
+    try writer.writeAll("],");
+    try writeKeyPrefix(writer, 1, "total");
+    try writeTotalsJson(writer, totals, 1);
+    try writeIndent(writer, 0);
     try writer.writeAll("}\n");
 }
 
-fn writeSummaryJson(writer: anytype, summary: DailySummary) !void {
-    try writer.writeAll("{\"date\":");
+fn writeSummaryJson(writer: anytype, summary: DailySummary, indent: usize) !void {
+    try writer.writeAll("{");
+    try writeKeyPrefix(writer, indent + 1, "date");
     try writeJsonString(writer, summary.display_date);
-    try writer.writeAll(",\"iso_date\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "iso_date");
     try writeJsonString(writer, summary.iso_date);
-    try writer.writeAll(",\"input_tokens\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "input_tokens");
     try writeUint(writer, summary.usage.input_tokens);
-    try writer.writeAll(",\"cached_input_tokens\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "cached_input_tokens");
     try writeUint(writer, summary.usage.cached_input_tokens);
-    try writer.writeAll(",\"output_tokens\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "output_tokens");
     try writeUint(writer, summary.usage.output_tokens);
-    try writer.writeAll(",\"reasoning_output_tokens\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "reasoning_output_tokens");
     try writeUint(writer, summary.usage.reasoning_output_tokens);
-    try writer.writeAll(",\"total_tokens\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "total_tokens");
     try writeUint(writer, summary.usage.total_tokens);
-    try writer.writeAll(",\"cost_usd\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "cost_usd");
     try writeFloat(writer, summary.cost_usd);
-    try writer.writeAll(",\"models\":[");
-    for (summary.models.items, 0..) |model, idx| {
-        if (idx != 0) try writer.writeAll(",");
-        try writeModelJson(writer, model);
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "models");
+    try writer.writeAll("[");
+    if (summary.models.items.len != 0) {
+        for (summary.models.items, 0..) |model, idx| {
+            try writeIndent(writer, indent + 2);
+            try writeModelJson(writer, model, indent + 2);
+            if (idx + 1 != summary.models.items.len) try writer.writeAll(",");
+        }
+        try writeIndent(writer, indent + 1);
     }
-    try writer.writeAll("],\"missing_pricing\":[");
-    for (summary.missing_pricing.items, 0..) |name, idx| {
-        if (idx != 0) try writer.writeAll(",");
-        try writeJsonString(writer, name);
+    try writer.writeAll("],");
+    try writeKeyPrefix(writer, indent + 1, "missing_pricing");
+    try writer.writeAll("[");
+    if (summary.missing_pricing.items.len != 0) {
+        for (summary.missing_pricing.items, 0..) |name, idx| {
+            try writeIndent(writer, indent + 2);
+            try writeJsonString(writer, name);
+            if (idx + 1 != summary.missing_pricing.items.len) try writer.writeAll(",");
+        }
+        try writeIndent(writer, indent + 1);
     }
-    try writer.writeAll("]}");
+    try writer.writeAll("]");
+    try writeIndent(writer, indent);
+    try writer.writeAll("}");
 }
 
-fn writeModelJson(writer: anytype, model: ModelSummary) !void {
-    try writer.writeAll("{\"name\":");
+fn writeModelJson(writer: anytype, model: ModelSummary, indent: usize) !void {
+    try writer.writeAll("{");
+    try writeKeyPrefix(writer, indent + 1, "name");
     try writeJsonString(writer, model.name);
-    try writer.writeAll(",\"display_name\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "display_name");
     if (model.is_fallback) {
         var buffer: [128]u8 = undefined;
         const display = std.fmt.bufPrint(&buffer, "{s} (fallback)", .{model.name}) catch model.name;
@@ -367,44 +401,67 @@ fn writeModelJson(writer: anytype, model: ModelSummary) !void {
     } else {
         try writeJsonString(writer, model.name);
     }
-    try writer.writeAll(",\"is_fallback\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "is_fallback");
     try writer.writeAll(if (model.is_fallback) "true" else "false");
-    try writer.writeAll(",\"input_tokens\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "input_tokens");
     try writeUint(writer, model.usage.input_tokens);
-    try writer.writeAll(",\"cached_input_tokens\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "cached_input_tokens");
     try writeUint(writer, model.usage.cached_input_tokens);
-    try writer.writeAll(",\"output_tokens\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "output_tokens");
     try writeUint(writer, model.usage.output_tokens);
-    try writer.writeAll(",\"reasoning_output_tokens\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "reasoning_output_tokens");
     try writeUint(writer, model.usage.reasoning_output_tokens);
-    try writer.writeAll(",\"total_tokens\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "total_tokens");
     try writeUint(writer, model.usage.total_tokens);
-    try writer.writeAll(",\"cost_usd\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "cost_usd");
     try writeFloat(writer, model.cost_usd);
-    try writer.writeAll(",\"pricing_available\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "pricing_available");
     try writer.writeAll(if (model.pricing_available) "true" else "false");
+    try writeIndent(writer, indent);
     try writer.writeAll("}");
 }
 
-fn writeTotalsJson(writer: anytype, totals: *const SummaryTotals) !void {
-    try writer.writeAll("{\"input_tokens\":");
+fn writeTotalsJson(writer: anytype, totals: *const SummaryTotals, indent: usize) !void {
+    try writer.writeAll("{");
+    try writeKeyPrefix(writer, indent + 1, "input_tokens");
     try writeUint(writer, totals.usage.input_tokens);
-    try writer.writeAll(",\"cached_input_tokens\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "cached_input_tokens");
     try writeUint(writer, totals.usage.cached_input_tokens);
-    try writer.writeAll(",\"output_tokens\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "output_tokens");
     try writeUint(writer, totals.usage.output_tokens);
-    try writer.writeAll(",\"reasoning_output_tokens\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "reasoning_output_tokens");
     try writeUint(writer, totals.usage.reasoning_output_tokens);
-    try writer.writeAll(",\"total_tokens\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "total_tokens");
     try writeUint(writer, totals.usage.total_tokens);
-    try writer.writeAll(",\"cost_usd\":");
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "cost_usd");
     try writeFloat(writer, totals.cost_usd);
-    try writer.writeAll(",\"missing_pricing\":[");
-    for (totals.missing_pricing.items, 0..) |name, idx| {
-        if (idx != 0) try writer.writeAll(",");
-        try writeJsonString(writer, name);
+    try writer.writeAll(",");
+    try writeKeyPrefix(writer, indent + 1, "missing_pricing");
+    try writer.writeAll("[");
+    if (totals.missing_pricing.items.len != 0) {
+        for (totals.missing_pricing.items, 0..) |name, idx| {
+            try writeIndent(writer, indent + 2);
+            try writeJsonString(writer, name);
+            if (idx + 1 != totals.missing_pricing.items.len) try writer.writeAll(",");
+        }
+        try writeIndent(writer, indent + 1);
     }
-    try writer.writeAll("]}");
+    try writer.writeAll("]");
+    try writeIndent(writer, indent);
+    try writer.writeAll("}");
 }
 
 fn writeFloat(writer: anytype, value: f64) !void {
@@ -456,6 +513,21 @@ fn writeJsonString(writer: anytype, value: []const u8) !void {
         }
     }
     try writer.writeAll("\"");
+}
+
+fn writeIndent(writer: anytype, level: usize) !void {
+    try writer.writeAll("\n");
+    var i: usize = 0;
+    while (i < level) : (i += 1) {
+        try writer.writeAll(INDENT);
+    }
+}
+
+fn writeKeyPrefix(writer: anytype, indent: usize, key: []const u8) !void {
+    try writeIndent(writer, indent);
+    try writer.writeAll("\"");
+    try writer.writeAll(key);
+    try writer.writeAll("\": ");
 }
 
 fn appendUniqueString(
