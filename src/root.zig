@@ -2,6 +2,36 @@ const std = @import("std");
 const Model = @import("model.zig");
 const codex = @import("providers/codex.zig");
 
+pub const DateFilters = struct {
+    since: ?[10]u8 = null,
+    until: ?[10]u8 = null,
+};
+
+pub const ParseDateError = error{
+    InvalidFormat,
+    InvalidDate,
+};
+
+pub fn parseFilterDate(input: []const u8) ParseDateError![10]u8 {
+    if (input.len != 8) return error.InvalidFormat;
+
+    _ = std.fmt.parseInt(u16, input[0..4], 10) catch return error.InvalidFormat;
+    const month = std.fmt.parseInt(u8, input[4..6], 10) catch return error.InvalidFormat;
+    const day = std.fmt.parseInt(u8, input[6..8], 10) catch return error.InvalidFormat;
+
+    if (month == 0 or month > 12) return error.InvalidDate;
+    if (day == 0 or day > 31) return error.InvalidDate;
+
+    var buffer: [10]u8 = undefined;
+    std.mem.copyForwards(u8, buffer[0..4], input[0..4]);
+    buffer[4] = '-';
+    std.mem.copyForwards(u8, buffer[5..7], input[4..6]);
+    buffer[7] = '-';
+    std.mem.copyForwards(u8, buffer[8..10], input[6..8]);
+
+    return buffer;
+}
+
 const ModelSummary = struct {
     name: []const u8,
     is_fallback: bool,
@@ -56,7 +86,7 @@ const SummaryTotals = struct {
     }
 };
 
-pub fn run(allocator: std.mem.Allocator) !void {
+pub fn run(allocator: std.mem.Allocator, filters: DateFilters) !void {
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -89,7 +119,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
     var date_index = std.StringHashMap(usize).init(allocator);
     defer date_index.deinit();
 
-    try buildDailySummaries(allocator, arena, events.items, &summaries, &date_index);
+    try buildDailySummaries(allocator, arena, events.items, &summaries, &date_index, filters);
 
     var missing_set = std.StringHashMap(u8).init(allocator);
     defer missing_set.deinit();
@@ -115,10 +145,12 @@ fn buildDailySummaries(
     events: []const Model.TokenUsageEvent,
     summaries: *std.ArrayListUnmanaged(DailySummary),
     date_index: *std.StringHashMap(usize),
+    filters: DateFilters,
 ) !void {
     for (events) |event| {
         var iso_buffer: [10]u8 = undefined;
         if (!extractIsoDate(event.timestamp, &iso_buffer)) continue;
+        if (!withinFilters(filters, iso_buffer[0..])) continue;
 
         if (date_index.get(iso_buffer[0..])) |idx| {
             try updateSummary(&summaries.items[idx], allocator, arena, &event);
@@ -132,6 +164,16 @@ fn buildDailySummaries(
         try date_index.put(iso_copy, summary_idx);
         try updateSummary(&summaries.items[summary_idx], allocator, arena, &event);
     }
+}
+
+fn withinFilters(filters: DateFilters, iso: []const u8) bool {
+    if (filters.since) |since_value| {
+        if (std.mem.lessThan(u8, iso, since_value[0..])) return false;
+    }
+    if (filters.until) |until_value| {
+        if (std.mem.lessThan(u8, until_value[0..], iso)) return false;
+    }
+    return true;
 }
 
 fn updateSummary(
