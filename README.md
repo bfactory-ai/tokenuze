@@ -1,0 +1,44 @@
+# Tokenuze
+
+Tokenuze is a Zig CLI that summarizes OpenAI Codex session usage. It scans `~/.codex/sessions`, aggregates token counts per day and per model, and reports pricing using either the live LiteLLM pricing manifest or local fallbacks. Output is emitted as compact JSON, making it easy to feed into dashboards or further scripts.
+
+## Requirements
+- Zig 0.12.0 or newer (stdlib is expected at `/usr/lib/zig/lib`)
+- Access to Codex session logs at `~/.codex/sessions`
+- Optional: network access to fetch remote pricing
+
+## Quick Start
+```bash
+zig build           # compile the debug binary
+zig build run -- --since 20250101
+zig build run -- --since 20250101 --until 20250107
+zig build -Drelease-fast run -- --since 20250101  # faster benchmarking runs
+```
+
+## What It Produces
+Tokenuze prints a JSON payload shaped like:
+```json
+{
+  "days": [
+    {
+      "date": "2025-11-01",
+      "models": [
+        {
+          "name": "gpt-5-codex",
+          "usage": { "input_tokens": 123, "output_tokens": 45, "total_tokens": 168 },
+          "cost_usd": 0.10
+        }
+      ],
+      "totals": { "total_tokens": 168, "cost_usd": 0.10 }
+    }
+  ],
+  "total": { "total_tokens": 168, "cost_usd": 0.10 }
+}
+```
+Missing pricing entries are listed under `missing_pricing`.
+
+## Extending
+Provider integrations live in `src/providers/`. To add a new LLM vendor:
+1. Copy the `codex.zig` pattern into `src/providers/<vendor>.zig`.
+2. Implement a `collect` function that appends `Model.TokenUsageEvent` records.
+3. Expose any provider-specific pricing loader and register the provider in `src/root.zig`.
