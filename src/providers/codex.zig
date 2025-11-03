@@ -22,6 +22,43 @@ const RawUsage = struct {
     total_tokens: u64,
 };
 
+const TokenString = struct {
+    slice: []const u8,
+    owned: ?[]u8 = null,
+
+    fn release(self: *TokenString, allocator: std.mem.Allocator) void {
+        if (self.owned) |buf| {
+            allocator.free(buf);
+        }
+        self.* = undefined;
+    }
+};
+
+const PayloadResult = struct {
+    payload_type: ?TokenString = null,
+    model: ?TokenString = null,
+    last_usage: ?RawUsage = null,
+    total_usage: ?RawUsage = null,
+
+    fn deinit(self: *PayloadResult, allocator: std.mem.Allocator) void {
+        if (self.payload_type) |*tok| tok.release(allocator);
+        if (self.model) |*tok| tok.release(allocator);
+        self.* = .{};
+    }
+};
+
+const ParseError = error{
+    UnexpectedToken,
+    InvalidNumber,
+};
+
+const ScannerAllocError = std.json.Scanner.AllocError;
+const ScannerSkipError = std.json.Scanner.SkipError;
+const ScannerNextError = std.json.Scanner.NextError;
+const ScannerPeekError = std.json.Scanner.PeekError;
+
+const ParserError = ParseError || ScannerAllocError || ScannerSkipError || ScannerNextError || ScannerPeekError;
+
 pub fn collect(
     allocator: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -131,58 +168,153 @@ fn parseSessionFile(
         const trimmed = std.mem.trim(u8, line, " \t\r\n");
         if (trimmed.len == 0) continue;
 
-        var parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{ .ignore_unknown_fields = true }) catch {
+        var scanner = std.json.Scanner.initCompleteInput(allocator, trimmed);
+        defer scanner.deinit();
+
+        const start_token = scanner.next() catch {
             continue;
         };
-        defer parsed.deinit();
+        if (start_token != .object_begin) continue;
 
-        const root = parsed.value;
-        const entry_type = objectGetString(root, "type") orelse continue;
+        var payload_result = PayloadResult{};
+        var timestamp_token: ?TokenString = null;
+        var is_turn_context = false;
+        var is_event_msg = false;
+        var parse_failed = false;
 
-        if (std.mem.eql(u8, entry_type, "turn_context")) {
-            const payload = objectGet(root, "payload");
-            if (payload) |payload_value| {
-                if (extractModel(arena, payload_value)) |model_name| {
-                    current_model = model_name;
-                    current_model_is_fallback = false;
+        while (!parse_failed) {
+            const key_token = scanner.nextAlloc(allocator, .alloc_if_needed) catch {
+                parse_failed = true;
+                break;
+            };
+
+            switch (key_token) {
+                .object_end => break,
+                .string => |slice| {
+                    var key = TokenString{ .slice = slice, .owned = null };
+                    defer key.release(allocator);
+                    parseObjectField(
+                        allocator,
+                        &scanner,
+                        key.slice,
+                        &payload_result,
+                        &timestamp_token,
+                        &is_turn_context,
+                        &is_event_msg,
+                    ) catch {
+                        parse_failed = true;
+                    };
+                },
+                .allocated_string => |buf| {
+                    var key = TokenString{ .slice = buf, .owned = buf };
+                    defer key.release(allocator);
+                    parseObjectField(
+                        allocator,
+                        &scanner,
+                        key.slice,
+                        &payload_result,
+                        &timestamp_token,
+                        &is_turn_context,
+                        &is_event_msg,
+                    ) catch {
+                        parse_failed = true;
+                    };
+                },
+                else => {
+                    parse_failed = true;
+                },
+            }
+        }
+
+        if (parse_failed) {
+            if (timestamp_token) |*tok| tok.release(allocator);
+            payload_result.deinit(allocator);
+            continue;
+        }
+
+        _ = scanner.next() catch {};
+
+        if (timestamp_token == null) {
+            payload_result.deinit(allocator);
+            continue;
+        }
+
+        if (is_turn_context) {
+            if (payload_result.model) |token| {
+                var model_token = token;
+                payload_result.model = null;
+                if (model_token.slice.len != 0) {
+                    const duplicated = duplicateNonEmpty(arena, model_token.slice) catch null;
+                    if (duplicated) |model_copy| {
+                        current_model = model_copy;
+                        current_model_is_fallback = false;
+                    }
                 }
+                model_token.release(allocator);
             }
+            if (timestamp_token) |*tok| tok.release(allocator);
+            payload_result.deinit(allocator);
             continue;
         }
 
-        if (!std.mem.eql(u8, entry_type, "event_msg")) continue;
-
-        const payload = objectGet(root, "payload") orelse continue;
-        const payload_type = objectGetString(payload, "type") orelse continue;
-        if (!std.mem.eql(u8, payload_type, "token_count")) continue;
-
-        const timestamp_str = objectGetString(root, "timestamp") orelse continue;
-        const timestamp = try duplicateNonEmpty(arena, timestamp_str) orelse continue;
-        const iso_date = timeutil.localIsoDateFromTimestamp(timestamp) catch continue;
-
-        const info = objectGet(payload, "info");
-        var raw: ?RawUsage = null;
-        if (info) |info_value| {
-            raw = normalizeRawUsage(objectGet(info_value, "last_token_usage"));
-            const total_usage = normalizeRawUsage(objectGet(info_value, "total_token_usage"));
-            if (raw == null and total_usage != null) {
-                raw = subtractRawUsage(total_usage.?, previous_totals);
-            }
-            if (total_usage != null) {
-                previous_totals = total_usage;
-            }
+        if (!is_event_msg) {
+            if (timestamp_token) |*tok| tok.release(allocator);
+            payload_result.deinit(allocator);
+            continue;
         }
 
-        if (raw == null) continue;
-        const delta = convertToDelta(raw.?);
+        var payload_type_is_token_count = false;
+        if (payload_result.payload_type) |token| {
+            payload_type_is_token_count = std.mem.eql(u8, token.slice, "token_count");
+        }
+        if (!payload_type_is_token_count) {
+            if (timestamp_token) |*tok| tok.release(allocator);
+            payload_result.deinit(allocator);
+            continue;
+        }
+
+        var raw_timestamp = timestamp_token.?;
+        timestamp_token = null;
+        const timestamp_copy = try duplicateNonEmpty(arena, raw_timestamp.slice) orelse {
+            raw_timestamp.release(allocator);
+            payload_result.deinit(allocator);
+            continue;
+        };
+        raw_timestamp.release(allocator);
+        const iso_date = timeutil.localIsoDateFromTimestamp(timestamp_copy) catch {
+            payload_result.deinit(allocator);
+            continue;
+        };
+
+        var current_raw: ?RawUsage = payload_result.last_usage;
+        const total_raw = payload_result.total_usage;
+        if (current_raw == null and total_raw != null) {
+            current_raw = subtractRawUsage(total_raw.?, previous_totals);
+        }
+        if (total_raw != null) {
+            previous_totals = total_raw;
+        }
+
+        if (current_raw == null) {
+            payload_result.deinit(allocator);
+            continue;
+        }
+
+        const delta = convertToDelta(current_raw.?);
         if (delta.input_tokens == 0 and delta.cached_input_tokens == 0 and delta.output_tokens == 0 and delta.reasoning_output_tokens == 0) {
+            payload_result.deinit(allocator);
             continue;
         }
 
-        const extracted_model = extractModel(arena, payload);
-        if (extracted_model) |name| {
-            current_model = name;
-            current_model_is_fallback = false;
+        var extracted_model: ?[]const u8 = null;
+        if (payload_result.model) |token| {
+            var model_token = token;
+            payload_result.model = null;
+            if (model_token.slice.len != 0) {
+                extracted_model = try duplicateNonEmpty(arena, model_token.slice);
+                if (extracted_model == null) extracted_model = current_model;
+            }
+            model_token.release(allocator);
         }
 
         var model_name = extracted_model;
@@ -202,7 +334,10 @@ fn parseSessionFile(
             current_model_is_fallback = false;
         }
 
-        if (model_name == null) continue;
+        if (model_name == null) {
+            payload_result.deinit(allocator);
+            continue;
+        }
         if (std.mem.eql(u8, model_name.?, LEGACY_FALLBACK_MODEL) and extracted_model == null) {
             is_fallback = true;
             current_model_is_fallback = true;
@@ -210,44 +345,419 @@ fn parseSessionFile(
 
         const event = Model.TokenUsageEvent{
             .session_id = session_id,
-            .timestamp = timestamp,
+            .timestamp = timestamp_copy,
             .local_iso_date = iso_date,
             .model = model_name.?,
             .usage = delta,
             .is_fallback = is_fallback,
         };
         try events.append(allocator, event);
+
+        payload_result.deinit(allocator);
     }
 }
 
-fn normalizeRawUsage(value_opt: ?std.json.Value) ?RawUsage {
-    const value = value_opt orelse return null;
-    return switch (value) {
-        .object => |obj| {
-            const input = ensureNumber(obj.get("input_tokens"));
-            const cached_direct = ensureNumber(obj.get("cached_input_tokens"));
-            const cached_fallback = ensureNumber(obj.get("cache_read_input_tokens"));
-            const cached = if (cached_direct > 0) cached_direct else cached_fallback;
+fn parseObjectField(
+    allocator: std.mem.Allocator,
+    scanner: *std.json.Scanner,
+    key: []const u8,
+    payload_result: *PayloadResult,
+    timestamp_token: *?TokenString,
+    is_turn_context: *bool,
+    is_event_msg: *bool,
+) ParserError!void {
+    if (std.mem.eql(u8, key, "type")) {
+        var value = try readStringToken(scanner, allocator);
+        defer value.release(allocator);
+        if (std.mem.eql(u8, value.slice, "turn_context")) {
+            is_turn_context.* = true;
+            is_event_msg.* = false;
+        } else if (std.mem.eql(u8, value.slice, "event_msg")) {
+            is_event_msg.* = true;
+            is_turn_context.* = false;
+        }
+        return;
+    }
 
-            return RawUsage{
-                .input_tokens = input,
-                .cached_input_tokens = cached,
-                .output_tokens = ensureNumber(obj.get("output_tokens")),
-                .reasoning_output_tokens = ensureNumber(obj.get("reasoning_output_tokens")),
-                .total_tokens = ensureNumber(obj.get("total_tokens")),
-            };
-        },
-        else => null,
+    if (std.mem.eql(u8, key, "timestamp")) {
+        if (timestamp_token.*) |*existing| existing.release(allocator);
+        timestamp_token.* = try readStringToken(scanner, allocator);
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "payload")) {
+        try parsePayload(allocator, scanner, payload_result);
+        return;
+    }
+
+    try scanner.skipValue();
+}
+
+fn readStringToken(scanner: *std.json.Scanner, allocator: std.mem.Allocator) ParserError!TokenString {
+    const token = try scanner.nextAlloc(allocator, .alloc_if_needed);
+    return switch (token) {
+        .string => |slice| TokenString{ .slice = slice },
+        .allocated_string => |buf| TokenString{ .slice = buf, .owned = buf },
+        else => ParseError.UnexpectedToken,
     };
 }
 
-fn ensureNumber(node_opt: ?std.json.Value) u64 {
-    const node = node_opt orelse return 0;
-    return switch (node) {
-        .integer => |value| if (value >= 0) @as(u64, @intCast(value)) else 0,
-        .float => |value| if (value >= 0) @as(u64, @intFromFloat(std.math.floor(value))) else 0,
-        else => 0,
+fn readOptionalStringToken(scanner: *std.json.Scanner, allocator: std.mem.Allocator) ParserError!?TokenString {
+    const peek = try scanner.peekNextTokenType();
+    switch (peek) {
+        .null => {
+            _ = try scanner.next();
+            return null;
+        },
+        .string => return try readStringToken(scanner, allocator),
+        else => return ParseError.UnexpectedToken,
+    }
+}
+
+fn readNumberToken(scanner: *std.json.Scanner, allocator: std.mem.Allocator) ParserError!TokenString {
+    const token = try scanner.nextAlloc(allocator, .alloc_if_needed);
+    return switch (token) {
+        .number => |slice| TokenString{ .slice = slice },
+        .allocated_number => |buf| TokenString{ .slice = buf, .owned = buf },
+        else => ParseError.UnexpectedToken,
     };
+}
+
+fn replaceToken(dest: *?TokenString, allocator: std.mem.Allocator, token: TokenString) void {
+    if (dest.*) |*existing| existing.release(allocator);
+    dest.* = token;
+}
+
+fn captureModelToken(dest: *?TokenString, allocator: std.mem.Allocator, token: TokenString) void {
+    if (token.slice.len == 0) {
+        var tmp = token;
+        tmp.release(allocator);
+        return;
+    }
+    if (dest.* == null) {
+        dest.* = token;
+    } else {
+        var tmp = token;
+        tmp.release(allocator);
+    }
+}
+
+fn isModelKey(key: []const u8) bool {
+    return std.mem.eql(u8, key, "model") or std.mem.eql(u8, key, "model_name");
+}
+
+fn parsePayload(
+    allocator: std.mem.Allocator,
+    scanner: *std.json.Scanner,
+    payload_result: *PayloadResult,
+) ParserError!void {
+    const peek = try scanner.peekNextTokenType();
+    if (peek == .null) {
+        _ = try scanner.next();
+        return;
+    }
+    if (peek != .object_begin) {
+        try scanner.skipValue();
+        return;
+    }
+
+    _ = try scanner.next(); // consume object_begin
+
+    while (true) {
+        const key_token = try scanner.nextAlloc(allocator, .alloc_if_needed);
+        switch (key_token) {
+            .object_end => break,
+            .string => |slice| {
+                var key = TokenString{ .slice = slice };
+                defer key.release(allocator);
+                try parsePayloadField(allocator, scanner, key.slice, payload_result);
+            },
+            .allocated_string => |buf| {
+                var key = TokenString{ .slice = buf, .owned = buf };
+                defer key.release(allocator);
+                try parsePayloadField(allocator, scanner, key.slice, payload_result);
+            },
+            else => return ParseError.UnexpectedToken,
+        }
+    }
+}
+
+fn parsePayloadField(
+    allocator: std.mem.Allocator,
+    scanner: *std.json.Scanner,
+    key: []const u8,
+    payload_result: *PayloadResult,
+) ParserError!void {
+    if (std.mem.eql(u8, key, "type")) {
+        replaceToken(&payload_result.payload_type, allocator, try readStringToken(scanner, allocator));
+        return;
+    }
+
+    if (isModelKey(key)) {
+        const maybe_token = try readOptionalStringToken(scanner, allocator);
+        if (maybe_token) |token| {
+            captureModelToken(&payload_result.model, allocator, token);
+        }
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "info")) {
+        try parseInfoObject(allocator, scanner, payload_result);
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "metadata")) {
+        try parseModelValue(allocator, scanner, &payload_result.model);
+        return;
+    }
+
+    try scanner.skipValue();
+}
+
+fn parseInfoObject(
+    allocator: std.mem.Allocator,
+    scanner: *std.json.Scanner,
+    payload_result: *PayloadResult,
+) ParserError!void {
+    const peek = try scanner.peekNextTokenType();
+    if (peek == .null) {
+        _ = try scanner.next();
+        return;
+    }
+    if (peek != .object_begin) {
+        try scanner.skipValue();
+        return;
+    }
+
+    _ = try scanner.next(); // consume object_begin
+
+    while (true) {
+        const key_token = try scanner.nextAlloc(allocator, .alloc_if_needed);
+        switch (key_token) {
+            .object_end => break,
+            .string => |slice| {
+                var key = TokenString{ .slice = slice };
+                defer key.release(allocator);
+                try parseInfoField(allocator, scanner, key.slice, payload_result);
+            },
+            .allocated_string => |buf| {
+                var key = TokenString{ .slice = buf, .owned = buf };
+                defer key.release(allocator);
+                try parseInfoField(allocator, scanner, key.slice, payload_result);
+            },
+            else => return ParseError.UnexpectedToken,
+        }
+    }
+}
+
+fn parseInfoField(
+    allocator: std.mem.Allocator,
+    scanner: *std.json.Scanner,
+    key: []const u8,
+    payload_result: *PayloadResult,
+) ParserError!void {
+    if (std.mem.eql(u8, key, "last_token_usage")) {
+        payload_result.last_usage = try parseUsageObject(allocator, scanner);
+        return;
+    }
+    if (std.mem.eql(u8, key, "total_token_usage")) {
+        payload_result.total_usage = try parseUsageObject(allocator, scanner);
+        return;
+    }
+    if (isModelKey(key)) {
+        const maybe_token = try readOptionalStringToken(scanner, allocator);
+        if (maybe_token) |token| {
+            captureModelToken(&payload_result.model, allocator, token);
+        }
+        return;
+    }
+    if (std.mem.eql(u8, key, "metadata")) {
+        try parseModelValue(allocator, scanner, &payload_result.model);
+        return;
+    }
+
+    try scanner.skipValue();
+}
+
+fn parseUsageObject(
+    allocator: std.mem.Allocator,
+    scanner: *std.json.Scanner,
+) ParserError!?RawUsage {
+    const peek = try scanner.peekNextTokenType();
+    if (peek == .null) {
+        _ = try scanner.next();
+        return null;
+    }
+    if (peek != .object_begin) {
+        try scanner.skipValue();
+        return null;
+    }
+
+    _ = try scanner.next();
+
+    var usage = RawUsage{
+        .input_tokens = 0,
+        .cached_input_tokens = 0,
+        .output_tokens = 0,
+        .reasoning_output_tokens = 0,
+        .total_tokens = 0,
+    };
+
+    var cached_direct: ?u64 = null;
+    var cached_fallback: ?u64 = null;
+
+    while (true) {
+        const key_token = try scanner.nextAlloc(allocator, .alloc_if_needed);
+        switch (key_token) {
+            .object_end => break,
+            .string => |slice| {
+                var key = TokenString{ .slice = slice };
+                defer key.release(allocator);
+                try parseUsageField(allocator, scanner, key.slice, &usage, &cached_direct, &cached_fallback);
+            },
+            .allocated_string => |buf| {
+                var key = TokenString{ .slice = buf, .owned = buf };
+                defer key.release(allocator);
+                try parseUsageField(allocator, scanner, key.slice, &usage, &cached_direct, &cached_fallback);
+            },
+            else => return ParseError.UnexpectedToken,
+        }
+    }
+
+    if (cached_direct) |value| {
+        if (value > 0) {
+            usage.cached_input_tokens = value;
+        } else if (cached_fallback) |fallback| {
+            usage.cached_input_tokens = fallback;
+        }
+    } else if (cached_fallback) |fallback| {
+        usage.cached_input_tokens = fallback;
+    }
+
+    return usage;
+}
+
+fn parseUsageField(
+    allocator: std.mem.Allocator,
+    scanner: *std.json.Scanner,
+    key: []const u8,
+    usage: *RawUsage,
+    cached_direct: *?u64,
+    cached_fallback: *?u64,
+) ParserError!void {
+    if (std.mem.eql(u8, key, "input_tokens")) {
+        usage.input_tokens = try parseU64Value(scanner, allocator);
+        return;
+    }
+    if (std.mem.eql(u8, key, "cached_input_tokens")) {
+        cached_direct.* = try parseU64Value(scanner, allocator);
+        return;
+    }
+    if (std.mem.eql(u8, key, "cache_read_input_tokens")) {
+        cached_fallback.* = try parseU64Value(scanner, allocator);
+        return;
+    }
+    if (std.mem.eql(u8, key, "output_tokens")) {
+        usage.output_tokens = try parseU64Value(scanner, allocator);
+        return;
+    }
+    if (std.mem.eql(u8, key, "reasoning_output_tokens")) {
+        usage.reasoning_output_tokens = try parseU64Value(scanner, allocator);
+        return;
+    }
+    if (std.mem.eql(u8, key, "total_tokens")) {
+        usage.total_tokens = try parseU64Value(scanner, allocator);
+        return;
+    }
+
+    try scanner.skipValue();
+}
+
+fn parseModelValue(
+    allocator: std.mem.Allocator,
+    scanner: *std.json.Scanner,
+    storage: *?TokenString,
+) ParserError!void {
+    const peek = try scanner.peekNextTokenType();
+    switch (peek) {
+        .object_begin => {
+            _ = try scanner.next();
+            while (true) {
+                const key_token = try scanner.nextAlloc(allocator, .alloc_if_needed);
+                switch (key_token) {
+                    .object_end => break,
+                    .string => |slice| {
+                        var key = TokenString{ .slice = slice };
+                        defer key.release(allocator);
+                        if (isModelKey(key.slice)) {
+                            const maybe_token = try readOptionalStringToken(scanner, allocator);
+                            if (maybe_token) |token| captureModelToken(storage, allocator, token);
+                        } else {
+                            try parseModelValue(allocator, scanner, storage);
+                        }
+                    },
+                    .allocated_string => |buf| {
+                        var key = TokenString{ .slice = buf, .owned = buf };
+                        defer key.release(allocator);
+                        if (isModelKey(key.slice)) {
+                            const maybe_token = try readOptionalStringToken(scanner, allocator);
+                            if (maybe_token) |token| captureModelToken(storage, allocator, token);
+                        } else {
+                            try parseModelValue(allocator, scanner, storage);
+                        }
+                    },
+                    else => return ParseError.UnexpectedToken,
+                }
+            }
+        },
+        .array_begin => {
+            _ = try scanner.next();
+            while (true) {
+                const next_type = try scanner.peekNextTokenType();
+                if (next_type == .array_end) {
+                    _ = try scanner.next();
+                    break;
+                }
+                try parseModelValue(allocator, scanner, storage);
+            }
+        },
+        .string => {
+            var value = try readStringToken(scanner, allocator);
+            value.release(allocator);
+        },
+        .null => {
+            _ = try scanner.next();
+        },
+        else => try scanner.skipValue(),
+    }
+}
+
+fn parseU64Value(scanner: *std.json.Scanner, allocator: std.mem.Allocator) ParserError!u64 {
+    const peek = try scanner.peekNextTokenType();
+    switch (peek) {
+        .null => {
+            _ = try scanner.next();
+            return 0;
+        },
+        .number => {
+            var number = try readNumberToken(scanner, allocator);
+            defer number.release(allocator);
+            return parseNumberSlice(number.slice);
+        },
+        else => return ParseError.UnexpectedToken,
+    }
+}
+
+fn parseNumberSlice(slice: []const u8) u64 {
+    if (slice.len == 0) return 0;
+    if (std.mem.indexOfScalar(u8, slice, '.')) |_| {
+        const parsed = std.fmt.parseFloat(f64, slice) catch return 0;
+        return if (parsed >= 0)
+            @as(u64, @intFromFloat(std.math.floor(parsed)))
+        else
+            0;
+    }
+    return std.fmt.parseInt(u64, slice, 10) catch 0;
 }
 
 fn subtractRawUsage(current: RawUsage, previous_opt: ?RawUsage) RawUsage {
@@ -424,69 +934,10 @@ fn valueAsFloat(value: std.json.Value) ?f64 {
     };
 }
 
-fn objectGet(value: std.json.Value, key: []const u8) ?std.json.Value {
-    return switch (value) {
-        .object => |obj| obj.get(key),
-        else => null,
-    };
-}
-
-fn objectGetString(value: std.json.Value, key: []const u8) ?[]const u8 {
-    return switch (value) {
-        .object => |obj| {
-            const entry = obj.get(key) orelse return null;
-            return switch (entry) {
-                .string => |text| text,
-                else => null,
-            };
-        },
-        else => null,
-    };
-}
-
 fn duplicateNonEmpty(arena: std.mem.Allocator, value: []const u8) !?[]const u8 {
     const trimmed = std.mem.trim(u8, value, " \t\r\n");
     if (trimmed.len == 0) return null;
     return try arena.dupe(u8, trimmed);
-}
-
-fn extractModel(arena: std.mem.Allocator, payload: std.json.Value) ?[]const u8 {
-    if (payload != .object) return null;
-
-    if (objectGet(payload, "info")) |info_obj| {
-        if (findModelCandidate(arena, info_obj)) |model| {
-            return model;
-        }
-        if (objectGet(info_obj, "metadata")) |meta| {
-            if (findModelCandidate(arena, meta)) |model| {
-                return model;
-            }
-        }
-    }
-
-    if (findModelCandidate(arena, payload)) |model| {
-        return model;
-    }
-
-    if (objectGet(payload, "metadata")) |metadata_obj| {
-        if (findModelCandidate(arena, metadata_obj)) |model| {
-            return model;
-        }
-    }
-
-    return null;
-}
-
-fn findModelCandidate(arena: std.mem.Allocator, value: std.json.Value) ?[]const u8 {
-    if (value != .object) return null;
-    const candidates = [_][]const u8{ "model", "model_name" };
-    for (candidates) |key| {
-        if (objectGetString(value, key)) |candidate| {
-            const maybe = duplicateNonEmpty(arena, candidate) catch null;
-            if (maybe) |dup| return dup;
-        }
-    }
-    return null;
 }
 
 const CollectWriter = struct {
