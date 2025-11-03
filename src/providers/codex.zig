@@ -13,13 +13,7 @@ const FALLBACK_PRICING = [_]struct {
     .{ .name = "gpt-5-codex", .pricing = .{ .input_cost_per_m = 1.25, .cached_input_cost_per_m = 0.125, .output_cost_per_m = 10.0 } },
 };
 
-const RawUsage = struct {
-    input_tokens: u64,
-    cached_input_tokens: u64,
-    output_tokens: u64,
-    reasoning_output_tokens: u64,
-    total_tokens: u64,
-};
+const RawUsage = Model.RawTokenUsage;
 
 const TokenString = struct {
     slice: []const u8,
@@ -376,21 +370,22 @@ fn parseSessionFile(
             continue;
         };
 
-        var current_raw: ?RawUsage = payload_result.last_usage;
-        const total_raw = payload_result.total_usage;
-        if (current_raw == null and total_raw != null) {
-            current_raw = subtractRawUsage(total_raw.?, previous_totals);
+        var delta_usage: ?Model.TokenUsage = null;
+        if (payload_result.last_usage) |last_usage| {
+            delta_usage = Model.TokenUsage.fromRaw(last_usage);
+        } else if (payload_result.total_usage) |total_usage| {
+            delta_usage = Model.TokenUsage.deltaFrom(total_usage, previous_totals);
         }
-        if (total_raw != null) {
-            previous_totals = total_raw;
+        if (payload_result.total_usage) |total_usage| {
+            previous_totals = total_usage;
         }
 
-        if (current_raw == null) {
+        if (delta_usage == null) {
             payload_result.deinit(allocator);
             continue;
         }
 
-        const delta = convertToDelta(current_raw.?);
+        const delta = delta_usage.?;
         if (delta.input_tokens == 0 and delta.cached_input_tokens == 0 and delta.output_tokens == 0 and delta.reasoning_output_tokens == 0) {
             payload_result.deinit(allocator);
             continue;
@@ -848,41 +843,6 @@ fn parseNumberSlice(slice: []const u8) u64 {
             0;
     }
     return std.fmt.parseInt(u64, slice, 10) catch 0;
-}
-
-fn subtractRawUsage(current: RawUsage, previous_opt: ?RawUsage) RawUsage {
-    const previous = previous_opt orelse RawUsage{
-        .input_tokens = 0,
-        .cached_input_tokens = 0,
-        .output_tokens = 0,
-        .reasoning_output_tokens = 0,
-        .total_tokens = 0,
-    };
-
-    return .{
-        .input_tokens = subtractPositive(current.input_tokens, previous.input_tokens),
-        .cached_input_tokens = subtractPositive(current.cached_input_tokens, previous.cached_input_tokens),
-        .output_tokens = subtractPositive(current.output_tokens, previous.output_tokens),
-        .reasoning_output_tokens = subtractPositive(current.reasoning_output_tokens, previous.reasoning_output_tokens),
-        .total_tokens = subtractPositive(current.total_tokens, previous.total_tokens),
-    };
-}
-
-fn subtractPositive(current: u64, previous: u64) u64 {
-    return if (current > previous) current - previous else 0;
-}
-
-fn convertToDelta(raw: RawUsage) Model.TokenUsage {
-    const total = if (raw.total_tokens > 0) raw.total_tokens else raw.input_tokens + raw.output_tokens;
-    const cached = if (raw.cached_input_tokens > raw.input_tokens) raw.input_tokens else raw.cached_input_tokens;
-
-    return .{
-        .input_tokens = raw.input_tokens,
-        .cached_input_tokens = cached,
-        .output_tokens = raw.output_tokens,
-        .reasoning_output_tokens = raw.reasoning_output_tokens,
-        .total_tokens = total,
-    };
 }
 
 fn loadPricing(

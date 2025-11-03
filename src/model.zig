@@ -47,6 +47,46 @@ pub const TokenUsage = struct {
         self.reasoning_output_tokens += other.reasoning_output_tokens;
         self.total_tokens += other.total_tokens;
     }
+
+    pub fn cost(self: TokenUsage, pricing: ModelPricing) f64 {
+        const non_cached = if (self.input_tokens > self.cached_input_tokens)
+            self.input_tokens - self.cached_input_tokens
+        else
+            0;
+        const cached = if (self.cached_input_tokens > self.input_tokens)
+            self.input_tokens
+        else
+            self.cached_input_tokens;
+
+        const input_cost = (@as(f64, @floatFromInt(non_cached)) / MILLION) * pricing.input_cost_per_m;
+        const cached_cost = (@as(f64, @floatFromInt(cached)) / MILLION) * pricing.cached_input_cost_per_m;
+        const output_cost = (@as(f64, @floatFromInt(self.output_tokens)) / MILLION) * pricing.output_cost_per_m;
+
+        return input_cost + cached_cost + output_cost;
+    }
+
+    pub fn fromRaw(raw: RawTokenUsage) TokenUsage {
+        return .{
+            .input_tokens = raw.input_tokens,
+            .cached_input_tokens = clampCached(raw.input_tokens, raw.cached_input_tokens),
+            .output_tokens = raw.output_tokens,
+            .reasoning_output_tokens = raw.reasoning_output_tokens,
+            .total_tokens = if (raw.total_tokens > 0) raw.total_tokens else raw.input_tokens + raw.output_tokens,
+        };
+    }
+
+    pub fn deltaFrom(current: RawTokenUsage, previous: ?RawTokenUsage) TokenUsage {
+        const delta_raw = rawUsageDelta(current, previous);
+        return TokenUsage.fromRaw(delta_raw);
+    }
+};
+
+pub const RawTokenUsage = struct {
+    input_tokens: u64 = 0,
+    cached_input_tokens: u64 = 0,
+    output_tokens: u64 = 0,
+    reasoning_output_tokens: u64 = 0,
+    total_tokens: u64 = 0,
 };
 
 pub const TokenUsageEvent = struct {
@@ -158,7 +198,7 @@ pub fn applyPricing(
     for (summary.models.items) |*model| {
         if (pricing_map.get(model.name)) |rate| {
             model.pricing_available = true;
-            model.cost_usd = calculateCost(model.usage, rate);
+            model.cost_usd = model.usage.cost(rate);
             summary.cost_usd += model.cost_usd;
         } else {
             model.pricing_available = false;
@@ -231,21 +271,23 @@ fn updateSummary(
     try summary.model_index.put(summary.models.items[new_index].name, new_index);
 }
 
-fn calculateCost(usage: TokenUsage, pricing: ModelPricing) f64 {
-    const non_cached = if (usage.input_tokens > usage.cached_input_tokens)
-        usage.input_tokens - usage.cached_input_tokens
-    else
-        0;
-    const cached = if (usage.cached_input_tokens > usage.input_tokens)
-        usage.input_tokens
-    else
-        usage.cached_input_tokens;
+fn rawUsageDelta(current: RawTokenUsage, previous_opt: ?RawTokenUsage) RawTokenUsage {
+    const previous = previous_opt orelse RawTokenUsage{};
+    return .{
+        .input_tokens = subtractPositive(current.input_tokens, previous.input_tokens),
+        .cached_input_tokens = subtractPositive(current.cached_input_tokens, previous.cached_input_tokens),
+        .output_tokens = subtractPositive(current.output_tokens, previous.output_tokens),
+        .reasoning_output_tokens = subtractPositive(current.reasoning_output_tokens, previous.reasoning_output_tokens),
+        .total_tokens = subtractPositive(current.total_tokens, previous.total_tokens),
+    };
+}
 
-    const input_cost = (@as(f64, @floatFromInt(non_cached)) / MILLION) * pricing.input_cost_per_m;
-    const cached_cost = (@as(f64, @floatFromInt(cached)) / MILLION) * pricing.cached_input_cost_per_m;
-    const output_cost = (@as(f64, @floatFromInt(usage.output_tokens)) / MILLION) * pricing.output_cost_per_m;
+fn subtractPositive(current: u64, previous: u64) u64 {
+    return if (current > previous) current - previous else 0;
+}
 
-    return input_cost + cached_cost + output_cost;
+fn clampCached(input_tokens: u64, cached_tokens: u64) u64 {
+    return if (cached_tokens > input_tokens) input_tokens else cached_tokens;
 }
 
 fn appendUniqueString(
