@@ -965,6 +965,7 @@ fn fetchRemotePricing(
     const payload = try arena.dupe(u8, buffer.items);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{
         .ignore_unknown_fields = true,
+        .duplicate_field_behavior = .use_last,
     });
     defer parsed.deinit();
 
