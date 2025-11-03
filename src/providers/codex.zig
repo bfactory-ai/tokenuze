@@ -96,9 +96,51 @@ fn collectEvents(
     arena: std.mem.Allocator,
     events: *std.ArrayListUnmanaged(Model.TokenUsageEvent),
 ) !void {
+    const SessionJob = struct {
+        path: []u8,
+        events_added: usize = 0,
+    };
+
+    const SharedContext = struct {
+        allocator: std.mem.Allocator,
+        arena: std.mem.Allocator,
+        events: *std.ArrayListUnmanaged(Model.TokenUsageEvent),
+        events_mutex: *std.Thread.Mutex,
+    };
+
+    const ProcessFn = struct {
+        fn run(shared: *SharedContext, job: *SessionJob) void {
+            var local_events = std.ArrayListUnmanaged(Model.TokenUsageEvent){};
+            defer local_events.deinit(shared.allocator);
+
+            const basename = std.fs.path.basename(job.path);
+            if (basename.len <= JSON_EXT.len or !std.mem.endsWith(u8, basename, JSON_EXT)) return;
+            const session_id_slice = basename[0 .. basename.len - JSON_EXT.len];
+
+            const maybe_session_id = duplicateNonEmpty(shared.arena, session_id_slice) catch {
+                return;
+            };
+            const session_id = maybe_session_id orelse return;
+
+            parseSessionFile(shared.allocator, shared.arena, session_id, job.path, &local_events) catch {
+                return;
+            };
+
+            if (local_events.items.len == 0) return;
+
+            shared.events_mutex.lock();
+            defer shared.events_mutex.unlock();
+
+            shared.events.ensureTotalCapacity(shared.allocator, shared.events.items.len + local_events.items.len) catch {
+                return;
+            };
+            shared.events.appendSliceAssumeCapacity(local_events.items);
+
+            job.events_added = local_events.items.len;
+        }
+    };
+
     var timer = try std.time.Timer.start();
-    var files_processed: usize = 0;
-    var events_added: usize = 0;
 
     const sessions_dir = resolveSessionsDir(allocator) catch |err| {
         std.log.info("codex.collectEvents: skipping, unable to resolve sessions dir ({s})", .{@errorName(err)});
@@ -118,21 +160,55 @@ fn collectEvents(
     var walker = try root_dir.walk(allocator);
     defer walker.deinit();
 
+    var jobs = std.ArrayListUnmanaged(SessionJob){};
+    defer {
+        for (jobs.items) |job| allocator.free(job.path);
+        jobs.deinit(allocator);
+    }
+
     while (try walker.next()) |entry| {
         if (entry.kind != .file) continue;
         const relative_path = std.mem.sliceTo(entry.path, 0);
         if (!std.mem.endsWith(u8, relative_path, JSON_EXT)) continue;
-        files_processed += 1;
-
-        const session_id_slice = relative_path[0 .. relative_path.len - JSON_EXT.len];
-        const session_id = try arena.dupe(u8, session_id_slice);
 
         const absolute_path = try std.fs.path.join(allocator, &.{ sessions_dir, relative_path });
-        defer allocator.free(absolute_path);
+        try jobs.append(allocator, .{ .path = absolute_path });
+    }
 
-        const before = events.items.len;
-        try parseSessionFile(allocator, arena, session_id, absolute_path, events);
-        events_added += events.items.len - before;
+    const files_processed = jobs.items.len;
+
+    if (files_processed == 0) {
+        std.log.info(
+            "codex.collectEvents: scanned 0 files, added 0 events in {d:.2}ms",
+            .{nsToMs(timer.read())},
+        );
+        return;
+    }
+
+    var events_mutex = std.Thread.Mutex{};
+
+    var thread_safe_arena = std.heap.ThreadSafeAllocator{ .child_allocator = arena };
+    var shared = SharedContext{
+        .allocator = allocator,
+        .arena = thread_safe_arena.allocator(),
+        .events = events,
+        .events_mutex = &events_mutex,
+    };
+
+    var threaded = std.Io.Threaded.init(allocator);
+    defer threaded.deinit();
+
+    const io = threaded.io();
+    var group = std.Io.Group.init;
+
+    for (jobs.items) |*job| {
+        group.async(io, ProcessFn.run, .{ &shared, job });
+    }
+    group.wait(io);
+
+    var events_added: usize = 0;
+    for (jobs.items) |job| {
+        events_added += job.events_added;
     }
 
     std.log.info(
