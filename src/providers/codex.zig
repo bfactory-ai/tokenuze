@@ -46,29 +46,35 @@ pub fn collect(
     arena: std.mem.Allocator,
     events: *std.ArrayListUnmanaged(Model.TokenUsageEvent),
     pricing: *Model.PricingMap,
-    progress: std.Progress.Node,
+    progress: ?std.Progress.Node,
 ) !void {
     var total_timer = try std.time.Timer.start();
 
-    std.Progress.Node.setEstimatedTotalItems(progress, 2);
+    if (progress) |node| std.Progress.Node.setEstimatedTotalItems(node, 2);
 
-    const events_progress = std.Progress.Node.start(progress, "scan sessions", 0);
+    var events_progress: ?std.Progress.Node = null;
+    if (progress) |node| {
+        events_progress = std.Progress.Node.start(node, "scan sessions", 0);
+    }
     var events_timer = try std.time.Timer.start();
     const before_events = events.items.len;
     try collectEvents(allocator, arena, events, events_progress);
     const after_events = events.items.len;
-    std.Progress.Node.end(events_progress);
+    if (events_progress) |node| std.Progress.Node.end(node);
     std.log.info(
         "codex.collectEvents produced {d} new events in {d:.2}ms",
         .{ after_events - before_events, nsToMs(events_timer.read()) },
     );
 
-    const pricing_progress = std.Progress.Node.start(progress, "pricing", 0);
+    var pricing_progress: ?std.Progress.Node = null;
+    if (progress) |node| {
+        pricing_progress = std.Progress.Node.start(node, "pricing", 0);
+    }
     var pricing_timer = try std.time.Timer.start();
     const before_pricing = pricing.count();
     try loadPricing(arena, allocator, pricing);
     const after_pricing = pricing.count();
-    std.Progress.Node.end(pricing_progress);
+    if (pricing_progress) |node| std.Progress.Node.end(node);
     std.log.info(
         "codex.loadPricing added {d} pricing models (total={d}) in {d:.2}ms",
         .{ after_pricing - before_pricing, after_pricing, nsToMs(pricing_timer.read()) },
@@ -84,7 +90,7 @@ fn collectEvents(
     allocator: std.mem.Allocator,
     arena: std.mem.Allocator,
     events: *std.ArrayListUnmanaged(Model.TokenUsageEvent),
-    progress: std.Progress.Node,
+    progress: ?std.Progress.Node,
 ) !void {
     const SessionJob = struct {
         path: []u8,
@@ -96,12 +102,12 @@ fn collectEvents(
         arena: std.mem.Allocator,
         events: *std.ArrayListUnmanaged(Model.TokenUsageEvent),
         events_mutex: *std.Thread.Mutex,
-        progress: std.Progress.Node,
+        progress: ?std.Progress.Node,
     };
 
     const ProcessFn = struct {
         fn run(shared: *SharedContext, job: *SessionJob) void {
-            defer std.Progress.Node.completeOne(shared.progress);
+            defer if (shared.progress) |node| std.Progress.Node.completeOne(node);
 
             var local_events = std.ArrayListUnmanaged(Model.TokenUsageEvent){};
             defer local_events.deinit(shared.allocator);
@@ -170,8 +176,10 @@ fn collectEvents(
 
     const files_processed = jobs.items.len;
 
-    std.Progress.Node.setEstimatedTotalItems(progress, files_processed);
-    std.Progress.Node.setCompletedItems(progress, 0);
+    if (progress) |node| {
+        std.Progress.Node.setEstimatedTotalItems(node, files_processed);
+        std.Progress.Node.setCompletedItems(node, 0);
+    }
 
     if (files_processed == 0) {
         std.log.info(

@@ -15,9 +15,13 @@ pub const SummaryTotals = Model.SummaryTotals;
 pub const parseFilterDate = Model.parseFilterDate;
 
 pub fn run(allocator: std.mem.Allocator, filters: DateFilters) !void {
-    const progress_root = std.Progress.start(.{ .root_name = "Tokenuze" });
-    errdefer std.Progress.setStatus(.failure);
-    defer std.Progress.Node.end(progress_root);
+    const disable_progress = !std.fs.File.stdout().isTty();
+    var progress_root: std.Progress.Node = undefined;
+    if (!disable_progress) {
+        progress_root = std.Progress.start(.{ .root_name = "Tokenuze" });
+    }
+    defer if (!disable_progress) std.Progress.Node.end(progress_root);
+    errdefer if (!disable_progress) std.Progress.setStatus(.failure);
 
     var total_timer = try std.time.Timer.start();
 
@@ -33,8 +37,11 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters) !void {
 
     var collect_timer = try std.time.Timer.start();
     {
-        const collect_progress = std.Progress.Node.start(progress_root, "collect codex", 0);
-        defer std.Progress.Node.end(collect_progress);
+        const collect_progress: ?std.Progress.Node = if (!disable_progress)
+            std.Progress.Node.start(progress_root, "collect codex", 0)
+        else
+            null;
+        defer if (collect_progress) |node| std.Progress.Node.end(node);
         try codex.collect(allocator, arena, &events, &pricing_map, collect_progress);
     }
     std.log.info(
@@ -43,31 +50,28 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters) !void {
     );
 
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_stream = std.fs.File.stdout().writer(&stdout_buffer);
-    var out_writer = stdout_stream.interface;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const out_writer = &stdout_writer.interface;
 
     if (events.items.len == 0) {
         std.log.info("no events to process; total runtime {d:.2}ms", .{nsToMs(total_timer.read())});
-        {
-            const write_progress = std.Progress.Node.start(progress_root, "write output", 0);
-            defer std.Progress.Node.end(write_progress);
-            if (filters.pretty_output) {
-                try out_writer.writeAll(
-                    "{\n  \"days\": [],\n  \"total\": {\n    \"input_tokens\": 0,\n    \"cached_input_tokens\": 0,\n    \"output_tokens\": 0,\n    \"reasoning_output_tokens\": 0,\n    \"total_tokens\": 0,\n    \"cost_usd\": 0.0,\n    \"missing_pricing\": []\n  }\n}\n",
-                );
-            } else {
-                try out_writer.writeAll("{\"days\":[],\"total\":{\"input_tokens\":0,\"cached_input_tokens\":0,\"output_tokens\":0,\"reasoning_output_tokens\":0,\"total_tokens\":0,\"cost_usd\":0.0,\"missing_pricing\":[]}}\n");
-            }
-        }
-        try out_writer.flush();
-        std.Progress.setStatus(.success);
+        var totals = SummaryTotals.init();
+        defer totals.deinit(allocator);
+        const empty_days = [_]DailySummary{};
+        try render.Renderer.writeSummary(out_writer, empty_days[0..], &totals, filters.pretty_output);
+        try flushOutput(out_writer);
+        if (!disable_progress) std.Progress.setStatus(.success);
         return;
     }
 
+    // ... rest of file ...
+
     var sort_events_timer = try std.time.Timer.start();
     {
-        const sort_progress = std.Progress.Node.start(progress_root, "sort events", 0);
-        defer std.Progress.Node.end(sort_progress);
+        if (!disable_progress) {
+            const sort_progress = std.Progress.Node.start(progress_root, "sort events", 0);
+            defer std.Progress.Node.end(sort_progress);
+        }
         std.sort.pdq(Model.TokenUsageEvent, events.items, {}, eventLessThan);
     }
     std.log.info(
@@ -88,8 +92,10 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters) !void {
 
     var build_timer = try std.time.Timer.start();
     {
-        const build_progress = std.Progress.Node.start(progress_root, "build summaries", 0);
-        defer std.Progress.Node.end(build_progress);
+        if (!disable_progress) {
+            const build_progress = std.Progress.Node.start(progress_root, "build summaries", 0);
+            defer std.Progress.Node.end(build_progress);
+        }
         try Model.buildDailySummaries(allocator, arena, events.items, &summaries, &date_index, filters);
     }
     std.log.info(
@@ -102,12 +108,15 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters) !void {
 
     var apply_pricing_timer = try std.time.Timer.start();
     {
-        const pricing_progress = std.Progress.Node.start(progress_root, "apply pricing", summaries.items.len);
-        defer std.Progress.Node.end(pricing_progress);
+        var pricing_progress: ?std.Progress.Node = null;
+        if (!disable_progress) {
+            pricing_progress = std.Progress.Node.start(progress_root, "apply pricing", summaries.items.len);
+        }
+        defer if (pricing_progress) |node| std.Progress.Node.end(node);
         for (summaries.items) |*summary| {
             Model.applyPricing(allocator, summary, &pricing_map, &missing_set);
             std.sort.pdq(ModelSummary, summary.models.items, {}, modelLessThan);
-            std.Progress.Node.completeOne(pricing_progress);
+            if (pricing_progress) |node| std.Progress.Node.completeOne(node);
         }
     }
     std.log.info(
@@ -117,8 +126,10 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters) !void {
 
     var sort_days_timer = try std.time.Timer.start();
     {
-        const sort_days_progress = std.Progress.Node.start(progress_root, "sort days", 0);
-        defer std.Progress.Node.end(sort_days_progress);
+        if (!disable_progress) {
+            const sort_days_progress = std.Progress.Node.start(progress_root, "sort days", 0);
+            defer std.Progress.Node.end(sort_days_progress);
+        }
         std.sort.pdq(DailySummary, summaries.items, {}, summaryLessThan);
     }
     std.log.info(
@@ -130,8 +141,10 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters) !void {
     defer totals.deinit(allocator);
     var totals_timer = try std.time.Timer.start();
     {
-        const totals_progress = std.Progress.Node.start(progress_root, "totals", 0);
-        defer std.Progress.Node.end(totals_progress);
+        if (!disable_progress) {
+            const totals_progress = std.Progress.Node.start(progress_root, "totals", 0);
+            defer std.Progress.Node.end(totals_progress);
+        }
         Model.accumulateTotals(allocator, &summaries, &totals);
         try Model.collectMissingModels(allocator, &missing_set, &totals.missing_pricing);
     }
@@ -142,22 +155,32 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters) !void {
 
     var output_timer = try std.time.Timer.start();
     {
-        const write_progress = std.Progress.Node.start(progress_root, "write output", 0);
-        defer std.Progress.Node.end(write_progress);
-        try render.Renderer.writeSummary(&out_writer, summaries.items, &totals, filters.pretty_output);
+        var write_progress: ?std.Progress.Node = null;
+        if (!disable_progress) {
+            write_progress = std.Progress.Node.start(progress_root, "write output", 0);
+        }
+        defer if (write_progress) |node| std.Progress.Node.end(node);
+        try render.Renderer.writeSummary(out_writer, summaries.items, &totals, filters.pretty_output);
     }
     std.log.info(
         "phase.write_json completed in {d:.2}ms (days={d})",
         .{ nsToMs(output_timer.read()), summaries.items.len },
     );
 
-    try out_writer.flush();
+    try flushOutput(out_writer);
     std.log.info("phase.total runtime {d:.2}ms", .{nsToMs(total_timer.read())});
-    std.Progress.setStatus(.success);
+    if (!disable_progress) std.Progress.setStatus(.success);
 }
 
 fn nsToMs(ns: u64) f64 {
     return @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(std.time.ns_per_ms));
+}
+
+fn flushOutput(writer: anytype) !void {
+    writer.flush() catch |err| switch (err) {
+        error.WriteFailed => {},
+        else => return err,
+    };
 }
 
 fn eventLessThan(_: void, lhs: Model.TokenUsageEvent, rhs: Model.TokenUsageEvent) bool {
