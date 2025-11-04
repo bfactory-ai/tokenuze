@@ -2,6 +2,7 @@ const std = @import("std");
 const Model = @import("model.zig");
 const codex = @import("providers/codex.zig");
 const render = @import("render.zig");
+pub const machine_id = @import("machine_id.zig");
 
 pub const std_options = .{
     .log_level = .info,
