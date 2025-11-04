@@ -8,7 +8,7 @@ const CliError = error{
 const CliOptions = struct {
     filters: tokenuze.DateFilters = .{},
     machine_id: bool = false,
-    providers: tokenuze.ProviderSelection = .{},
+    providers: tokenuze.ProviderSelection = tokenuze.ProviderSelection.initAll(),
 };
 
 pub fn main() !void {
@@ -72,14 +72,12 @@ fn parseOptions(allocator: std.mem.Allocator) CliError!CliOptions {
             const value = args.next() orelse return cliError("missing value for --model", .{});
             if (!models_specified) {
                 models_specified = true;
-                options.providers = .{ .include_codex = false, .include_gemini = false };
+                options.providers = tokenuze.ProviderSelection.initEmpty();
             }
-            if (std.mem.eql(u8, value, "codex")) {
-                options.providers.include_codex = true;
-            } else if (std.mem.eql(u8, value, "gemini")) {
-                options.providers.include_gemini = true;
+            if (tokenuze.findProviderIndex(value)) |index| {
+                options.providers.includeIndex(index);
             } else {
-                return cliError("unknown model '{s}' (expected 'codex' or 'gemini')", .{value});
+                return cliError("unknown model '{s}' (expected one of: {s})", .{ value, providerListDescription() });
             }
             continue;
         }
@@ -123,4 +121,8 @@ fn printMachineId(allocator: std.mem.Allocator) !void {
 fn cliError(comptime fmt: []const u8, args: anytype) CliError {
     std.debug.print("error: " ++ fmt ++ "\n", args);
     return CliError.InvalidUsage;
+}
+
+fn providerListDescription() []const u8 {
+    return tokenuze.provider_list_description;
 }

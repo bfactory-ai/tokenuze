@@ -16,23 +16,6 @@ pub const DailySummary = Model.DailySummary;
 pub const SummaryTotals = Model.SummaryTotals;
 pub const parseFilterDate = Model.parseFilterDate;
 
-pub const ProviderId = enum {
-    codex,
-    gemini,
-};
-
-pub const ProviderSelection = struct {
-    include_codex: bool = true,
-    include_gemini: bool = true,
-
-    pub fn includes(self: ProviderSelection, id: ProviderId) bool {
-        return switch (id) {
-            .codex => self.include_codex,
-            .gemini => self.include_gemini,
-        };
-    }
-};
-
 const CollectFn = *const fn (
     std.mem.Allocator,
     std.mem.Allocator,
@@ -42,11 +25,87 @@ const CollectFn = *const fn (
     ?std.Progress.Node,
 ) anyerror!void;
 
-const ProviderSpec = struct {
-    id: ProviderId,
+pub const ProviderSpec = struct {
+    name: []const u8,
     phase_label: []const u8,
     collect: CollectFn,
 };
+
+pub const providers = [_]ProviderSpec{
+    .{ .name = "codex", .phase_label = "collect codex", .collect = codex.collect },
+    .{ .name = "gemini", .phase_label = "collect gemini", .collect = gemini.collect },
+};
+
+const provider_name_list = initProviderNames();
+pub const provider_list_description = initProviderListDescription();
+
+fn initProviderNames() [providers.len][]const u8 {
+    var names: [providers.len][]const u8 = undefined;
+    inline for (providers, 0..) |provider, idx| {
+        names[idx] = provider.name;
+    }
+    return names;
+}
+
+pub fn providerNames() []const []const u8 {
+    return provider_name_list[0..];
+}
+
+fn initProviderListDescription() []const u8 {
+    comptime var combined: []const u8 = "";
+    inline for (providers, 0..) |provider, idx| {
+        if (idx == 0) {
+            combined = provider.name;
+        } else {
+            combined = std.fmt.comptimePrint("{s}, {s}", .{ combined, provider.name });
+        }
+    }
+    return combined;
+}
+
+const provider_count = providers.len;
+comptime {
+    if (provider_count == 0) @compileError("tokenuze requires at least one provider");
+    if (provider_count > 64) @compileError("ProviderSelection mask currently supports up to 64 providers");
+}
+
+const provider_full_mask: u64 = if (provider_count == 64)
+    std.math.maxInt(u64)
+else if (provider_count == 0)
+    0
+else
+    (@as(u64, 1) << @intCast(provider_count)) - 1;
+
+pub const ProviderSelection = struct {
+    mask: u64 = provider_full_mask,
+
+    pub fn initAll() ProviderSelection {
+        return .{ .mask = provider_full_mask };
+    }
+
+    pub fn initEmpty() ProviderSelection {
+        return .{ .mask = 0 };
+    }
+
+    pub fn includeIndex(self: *ProviderSelection, index: usize) void {
+        self.mask |= @as(u64, 1) << @intCast(index);
+    }
+
+    pub fn includesIndex(self: ProviderSelection, index: usize) bool {
+        return (self.mask & (@as(u64, 1) << @intCast(index))) != 0;
+    }
+
+    pub fn isEmpty(self: ProviderSelection) bool {
+        return self.mask == 0;
+    }
+};
+
+pub fn findProviderIndex(name: []const u8) ?usize {
+    for (providers, 0..) |provider, idx| {
+        if (std.mem.eql(u8, provider.name, name)) return idx;
+    }
+    return null;
+}
 
 pub fn run(allocator: std.mem.Allocator, filters: DateFilters, selection: ProviderSelection) !void {
     const disable_progress = !std.fs.File.stdout().isTty();
@@ -70,13 +129,8 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters, selection: Provid
     var summary_builder = Model.SummaryBuilder.init(allocator);
     defer summary_builder.deinit(allocator);
 
-    const providers = [_]ProviderSpec{
-        .{ .id = .codex, .phase_label = "collect codex", .collect = codex.collect },
-        .{ .id = .gemini, .phase_label = "collect gemini", .collect = gemini.collect },
-    };
-
-    for (providers) |provider| {
-        if (!selection.includes(provider.id)) continue;
+    for (providers, 0..) |provider, idx| {
+        if (!selection.includesIndex(idx)) continue;
         const before_events = summary_builder.eventCount();
         const before_pricing = pricing_map.count();
         var collect_phase = try PhaseTracker.start(progress_parent, provider.phase_label, 0);
