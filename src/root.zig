@@ -32,8 +32,8 @@ pub const ProviderSpec = struct {
 };
 
 pub const providers = [_]ProviderSpec{
-    .{ .name = "codex", .phase_label = "collect codex", .collect = codex.collect },
-    .{ .name = "gemini", .phase_label = "collect gemini", .collect = gemini.collect },
+    .{ .name = "codex", .phase_label = "collect_codex", .collect = codex.collect },
+    .{ .name = "gemini", .phase_label = "collect_gemini", .collect = gemini.collect },
 };
 
 const provider_name_list = initProviderNames();
@@ -138,7 +138,7 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters, selection: Provid
         const elapsed = collect_phase.elapsedMs();
         collect_phase.finish();
         std.log.info(
-            "phase '{s}' completed in {d:.2}ms (events += {d}, total_events={d}, pricing_models={d}, pricing_added={d})",
+            "phase.{s} completed in {d:.2}ms (events += {d}, total_events={d}, pricing_models={d}, pricing_added={d})",
             .{
                 provider.phase_label,
                 elapsed,
