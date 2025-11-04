@@ -470,7 +470,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             return switch (value) {
                 .integer => |val| if (val >= 0) @as(u64, @intCast(val)) else 0,
                 .float => |val| if (val >= 0)
-                    @as(u64, @intFromFloat(@floor(val)))
+                    std.math.lossyCast(u64, @floor(val))
                 else
                     0,
                 .number_string => |slice| Model.parseTokenNumber(slice),
