@@ -438,8 +438,6 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                             }
                         }
 
-                        if (model_name == null) continue;
-
                         const event = Model.TokenUsageEvent{
                             .session_id = session_label,
                             .timestamp = timestamp_copy,
