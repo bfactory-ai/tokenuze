@@ -912,53 +912,28 @@ fn fetchRemotePricing(
     };
     defer client.deinit();
 
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(allocator);
-
-    var writer_ctx = CollectWriter.init(&buffer, allocator);
-
-    const result = try client.fetch(.{
-        .location = .{ .url = Model.PRICING_URL },
-        .response_writer = &writer_ctx.base,
+    const uri = try std.Uri.parse(Model.PRICING_URL);
+    var request = try client.request(.GET, uri, .{
+        .headers = .{ .accept_encoding = .{ .override = "identity" } },
     });
+    defer request.deinit();
+    try request.sendBodiless();
 
-    if (result.status.class() != .success) return error.HttpError;
+    var response = try request.receiveHead(&.{});
+    if (response.head.status.class() != .success) return error.HttpError;
 
-    const payload = try arena.dupe(u8, buffer.items);
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{
-        .ignore_unknown_fields = true,
-        .duplicate_field_behavior = .use_last,
-    });
-    defer parsed.deinit();
+    var transfer_buffer: [4096]u8 = undefined;
+    const body_reader = response.reader(&transfer_buffer);
 
-    if (parsed.value != .object) return error.InvalidResponse;
+    var json_reader = std.json.Reader.init(allocator, body_reader);
+    defer json_reader.deinit();
 
-    var it = parsed.value.object.iterator();
-    while (it.next()) |entry| {
-        try addPricingFromJson(arena, pricing, entry.key_ptr.*, entry.value_ptr.*);
-    }
-}
-
-fn addPricingFromJson(
-    arena: std.mem.Allocator,
-    pricing: *Model.PricingMap,
-    model_name: []const u8,
-    value: std.json.Value,
-) !void {
-    if (pricing.get(model_name) != null) return;
-    if (value != .object) return;
-
-    const obj = value.object;
-    const input = getNumericField(obj, "input_cost_per_token") orelse return;
-    const output = getNumericField(obj, "output_cost_per_token") orelse return;
-    const cached = getNumericField(obj, "cache_read_input_token_cost") orelse input;
-
-    const key = try arena.dupe(u8, model_name);
-    try pricing.put(key, .{
-        .input_cost_per_m = input * Model.MILLION,
-        .cached_input_cost_per_m = cached * Model.MILLION,
-        .output_cost_per_m = output * Model.MILLION,
-    });
+    var parser = PricingFeedParser{
+        .arena = arena,
+        .allocator = allocator,
+        .pricing = pricing,
+    };
+    try parser.parse(&json_reader);
 }
 
 fn ensureFallbackPricing(arena: std.mem.Allocator, pricing: *Model.PricingMap) !void {
@@ -969,21 +944,108 @@ fn ensureFallbackPricing(arena: std.mem.Allocator, pricing: *Model.PricingMap) !
     }
 }
 
-fn getNumericField(
-    object: std.json.ObjectMap,
-    field: []const u8,
-) ?f64 {
-    const entry = object.get(field) orelse return null;
-    return valueAsFloat(entry);
+const PricingFeedParser = struct {
+    arena: std.mem.Allocator,
+    allocator: std.mem.Allocator,
+    pricing: *Model.PricingMap,
+
+    pub fn parse(self: *PricingFeedParser, reader: *std.json.Reader) !void {
+        var key_buffer = std.array_list.Managed(u8).init(self.allocator);
+        defer key_buffer.deinit();
+        var scratch = std.array_list.Managed(u8).init(self.allocator);
+        defer scratch.deinit();
+
+        if ((try reader.next()) != .object_begin) return error.InvalidResponse;
+
+        while (true) {
+            switch (try reader.peekNextTokenType()) {
+                .object_end => {
+                    _ = try reader.next();
+                    switch (try reader.next()) {
+                        .end_of_document => return,
+                        else => return error.InvalidResponse,
+                    }
+                },
+                .string => {
+                    const name_slice = try readStringValue(reader, &key_buffer);
+                    const copied_name = try self.arena.dupe(u8, name_slice);
+                    const maybe_pricing = try self.parseEntry(reader, &scratch);
+                    if (maybe_pricing) |entry| {
+                        if (self.pricing.get(copied_name) == null) {
+                            try self.pricing.put(copied_name, entry);
+                        }
+                    }
+                    key_buffer.clearRetainingCapacity();
+                },
+                else => return error.InvalidResponse,
+            }
+        }
+    }
+
+    fn parseEntry(
+        self: *PricingFeedParser,
+        reader: *std.json.Reader,
+        scratch: *std.array_list.Managed(u8),
+    ) !?Model.ModelPricing {
+        _ = self;
+        if ((try reader.next()) != .object_begin) {
+            try reader.skipValue();
+            return null;
+        }
+
+        var input_rate: ?f64 = null;
+        var cached_rate: ?f64 = null;
+        var output_rate: ?f64 = null;
+
+        while (true) {
+            switch (try reader.peekNextTokenType()) {
+                .object_end => {
+                    _ = try reader.next();
+                    break;
+                },
+                .string => {
+                    const field = try readStringValue(reader, scratch);
+                    if (std.mem.eql(u8, field, "input_cost_per_token")) {
+                        input_rate = try readNumber(reader, scratch);
+                    } else if (std.mem.eql(u8, field, "output_cost_per_token")) {
+                        output_rate = try readNumber(reader, scratch);
+                    } else if (std.mem.eql(u8, field, "cache_read_input_token_cost")) {
+                        cached_rate = try readNumber(reader, scratch);
+                    } else {
+                        try reader.skipValue();
+                    }
+                },
+                else => return error.InvalidResponse,
+            }
+        }
+
+        if (input_rate == null or output_rate == null) return null;
+        const cached = cached_rate orelse input_rate.?;
+        return Model.ModelPricing{
+            .input_cost_per_m = input_rate.? * Model.MILLION,
+            .cached_input_cost_per_m = cached * Model.MILLION,
+            .output_cost_per_m = output_rate.? * Model.MILLION,
+        };
+    }
+};
+
+fn readStringValue(
+    reader: *std.json.Reader,
+    buffer: *std.array_list.Managed(u8),
+) ![]const u8 {
+    buffer.clearRetainingCapacity();
+    const slice = try reader.allocNextIntoArrayList(buffer, .alloc_if_needed);
+    return slice orelse buffer.items;
 }
 
-fn valueAsFloat(value: std.json.Value) ?f64 {
-    return switch (value) {
-        .float => |f| f,
-        .integer => |i| @floatFromInt(i),
-        .number_string => |s| std.fmt.parseFloat(f64, s) catch null,
-        else => null,
-    };
+fn readNumber(
+    reader: *std.json.Reader,
+    buffer: *std.array_list.Managed(u8),
+) !f64 {
+    buffer.clearRetainingCapacity();
+    const slice = try reader.allocNextIntoArrayList(buffer, .alloc_if_needed);
+    const number_slice = slice orelse buffer.items;
+    return std.fmt.parseFloat(f64, number_slice) catch return error.InvalidNumber;
 }
 
 fn duplicateNonEmpty(arena: std.mem.Allocator, value: []const u8) !?[]const u8 {
