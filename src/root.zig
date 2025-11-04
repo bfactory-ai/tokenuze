@@ -22,6 +22,7 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters) !void {
     }
     defer if (!disable_progress) std.Progress.Node.end(progress_root);
     errdefer if (!disable_progress) std.Progress.setStatus(.failure);
+    const progress_parent = if (!disable_progress) &progress_root else null;
 
     var total_timer = try std.time.Timer.start();
 
@@ -35,18 +36,12 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters) !void {
     var pricing_map = Model.PricingMap.init(allocator);
     defer pricing_map.deinit();
 
-    var collect_timer = try std.time.Timer.start();
-    {
-        const collect_progress: ?std.Progress.Node = if (!disable_progress)
-            std.Progress.Node.start(progress_root, "collect codex", 0)
-        else
-            null;
-        defer if (collect_progress) |node| std.Progress.Node.end(node);
-        try codex.collect(allocator, arena, &events, &pricing_map, collect_progress);
-    }
+    var collect_phase = try PhaseTracker.start(progress_parent, "collect codex", 0);
+    defer collect_phase.finish();
+    try codex.collect(allocator, arena, &events, &pricing_map, collect_phase.progress());
     std.log.info(
         "phase.collect completed in {d:.2}ms (events={d}, pricing_models={d})",
-        .{ nsToMs(collect_timer.read()), events.items.len, pricing_map.count() },
+        .{ collect_phase.elapsedMs(), events.items.len, pricing_map.count() },
     );
 
     var stdout_buffer: [4096]u8 = undefined;
@@ -66,17 +61,12 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters) !void {
 
     // ... rest of file ...
 
-    var sort_events_timer = try std.time.Timer.start();
-    {
-        if (!disable_progress) {
-            const sort_progress = std.Progress.Node.start(progress_root, "sort events", 0);
-            defer std.Progress.Node.end(sort_progress);
-        }
-        std.sort.pdq(Model.TokenUsageEvent, events.items, {}, eventLessThan);
-    }
+    var sort_phase = try PhaseTracker.start(progress_parent, "sort events", 0);
+    defer sort_phase.finish();
+    std.sort.pdq(Model.TokenUsageEvent, events.items, {}, eventLessThan);
     std.log.info(
         "phase.sort_events completed in {d:.2}ms (events={d})",
-        .{ nsToMs(sort_events_timer.read()), events.items.len },
+        .{ sort_phase.elapsedMs(), events.items.len },
     );
 
     var summaries = std.ArrayListUnmanaged(DailySummary){};
@@ -90,87 +80,84 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters) !void {
     var date_index = std.StringHashMap(usize).init(allocator);
     defer date_index.deinit();
 
-    var build_timer = try std.time.Timer.start();
-    {
-        if (!disable_progress) {
-            const build_progress = std.Progress.Node.start(progress_root, "build summaries", 0);
-            defer std.Progress.Node.end(build_progress);
-        }
-        try Model.buildDailySummaries(allocator, arena, events.items, &summaries, &date_index, filters);
-    }
+    var build_phase = try PhaseTracker.start(progress_parent, "build summaries", 0);
+    defer build_phase.finish();
+    try Model.buildDailySummaries(allocator, arena, events.items, &summaries, &date_index, filters);
     std.log.info(
         "phase.build_summaries completed in {d:.2}ms (days={d})",
-        .{ nsToMs(build_timer.read()), summaries.items.len },
+        .{ build_phase.elapsedMs(), summaries.items.len },
     );
 
     var missing_set = std.StringHashMap(u8).init(allocator);
     defer missing_set.deinit();
 
-    var apply_pricing_timer = try std.time.Timer.start();
-    {
-        var pricing_progress: ?std.Progress.Node = null;
-        if (!disable_progress) {
-            pricing_progress = std.Progress.Node.start(progress_root, "apply pricing", summaries.items.len);
-        }
-        defer if (pricing_progress) |node| std.Progress.Node.end(node);
-        for (summaries.items) |*summary| {
-            Model.applyPricing(allocator, summary, &pricing_map, &missing_set);
-            std.sort.pdq(ModelSummary, summary.models.items, {}, modelLessThan);
-            if (pricing_progress) |node| std.Progress.Node.completeOne(node);
-        }
+    var pricing_phase = try PhaseTracker.start(progress_parent, "apply pricing", summaries.items.len);
+    defer pricing_phase.finish();
+    for (summaries.items) |*summary| {
+        Model.applyPricing(allocator, summary, &pricing_map, &missing_set);
+        std.sort.pdq(ModelSummary, summary.models.items, {}, modelLessThan);
+        if (pricing_phase.progress()) |node| std.Progress.Node.completeOne(node);
     }
     std.log.info(
         "phase.apply_pricing completed in {d:.2}ms (days={d})",
-        .{ nsToMs(apply_pricing_timer.read()), summaries.items.len },
+        .{ pricing_phase.elapsedMs(), summaries.items.len },
     );
 
-    var sort_days_timer = try std.time.Timer.start();
-    {
-        if (!disable_progress) {
-            const sort_days_progress = std.Progress.Node.start(progress_root, "sort days", 0);
-            defer std.Progress.Node.end(sort_days_progress);
-        }
-        std.sort.pdq(DailySummary, summaries.items, {}, summaryLessThan);
-    }
+    var sort_days_phase = try PhaseTracker.start(progress_parent, "sort days", 0);
+    defer sort_days_phase.finish();
+    std.sort.pdq(DailySummary, summaries.items, {}, summaryLessThan);
     std.log.info(
         "phase.sort_days completed in {d:.2}ms (days={d})",
-        .{ nsToMs(sort_days_timer.read()), summaries.items.len },
+        .{ sort_days_phase.elapsedMs(), summaries.items.len },
     );
 
     var totals = SummaryTotals.init();
     defer totals.deinit(allocator);
-    var totals_timer = try std.time.Timer.start();
-    {
-        if (!disable_progress) {
-            const totals_progress = std.Progress.Node.start(progress_root, "totals", 0);
-            defer std.Progress.Node.end(totals_progress);
-        }
-        Model.accumulateTotals(allocator, &summaries, &totals);
-        try Model.collectMissingModels(allocator, &missing_set, &totals.missing_pricing);
-    }
+    var totals_phase = try PhaseTracker.start(progress_parent, "totals", 0);
+    defer totals_phase.finish();
+    Model.accumulateTotals(allocator, &summaries, &totals);
+    try Model.collectMissingModels(allocator, &missing_set, &totals.missing_pricing);
     std.log.info(
         "phase.totals completed in {d:.2}ms (missing_pricing={d})",
-        .{ nsToMs(totals_timer.read()), totals.missing_pricing.items.len },
+        .{ totals_phase.elapsedMs(), totals.missing_pricing.items.len },
     );
 
-    var output_timer = try std.time.Timer.start();
-    {
-        var write_progress: ?std.Progress.Node = null;
-        if (!disable_progress) {
-            write_progress = std.Progress.Node.start(progress_root, "write output", 0);
-        }
-        defer if (write_progress) |node| std.Progress.Node.end(node);
-        try render.Renderer.writeSummary(out_writer, summaries.items, &totals, filters.pretty_output);
-    }
+    var output_phase = try PhaseTracker.start(progress_parent, "write output", 0);
+    defer output_phase.finish();
+    try render.Renderer.writeSummary(out_writer, summaries.items, &totals, filters.pretty_output);
     std.log.info(
         "phase.write_json completed in {d:.2}ms (days={d})",
-        .{ nsToMs(output_timer.read()), summaries.items.len },
+        .{ output_phase.elapsedMs(), summaries.items.len },
     );
 
     try flushOutput(out_writer);
     std.log.info("phase.total runtime {d:.2}ms", .{nsToMs(total_timer.read())});
     if (!disable_progress) std.Progress.setStatus(.success);
 }
+
+const PhaseTracker = struct {
+    timer: std.time.Timer,
+    node: ?std.Progress.Node,
+
+    pub fn start(parent: ?*std.Progress.Node, label: []const u8, total_items: usize) !PhaseTracker {
+        return .{
+            .timer = try std.time.Timer.start(),
+            .node = if (parent) |root| std.Progress.Node.start(root.*, label, total_items) else null,
+        };
+    }
+
+    pub fn progress(self: *PhaseTracker) ?std.Progress.Node {
+        return self.node;
+    }
+
+    pub fn elapsedMs(self: *PhaseTracker) f64 {
+        return nsToMs(self.timer.read());
+    }
+
+    pub fn finish(self: *PhaseTracker) void {
+        if (self.node) |node| std.Progress.Node.end(node);
+    }
+};
 
 fn nsToMs(ns: u64) f64 {
     return @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(std.time.ns_per_ms));
