@@ -239,181 +239,77 @@ fn parseSessionFile(
     var current_model: ?[]const u8 = null;
     var current_model_is_fallback = false;
     const max_session_size: usize = 128 * 1024 * 1024;
-    const file_bytes = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.limited(max_session_size)) catch {
+    const file = std.fs.cwd().openFile(file_path, .{}) catch {
         return;
     };
-    defer allocator.free(file_bytes);
+    defer file.close();
 
     var scanner = std.json.Scanner.initStreaming(allocator);
     defer scanner.deinit();
 
-    var lines = std.mem.splitScalar(u8, file_bytes, '\n');
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r\n");
-        if (trimmed.len == 0) continue;
+    var partial_line = std.ArrayListUnmanaged(u8){};
+    defer partial_line.deinit(allocator);
 
-        resetScanner(&scanner, trimmed);
-
-        const start_token = scanner.next() catch {
-            continue;
+    var read_buffer: [64 * 1024]u8 = undefined;
+    var bytes_consumed: usize = 0;
+    while (true) {
+        const read_bytes = file.read(&read_buffer) catch {
+            return;
         };
-        if (start_token != .object_begin) continue;
-
-        var payload_result = PayloadResult{};
-        defer payload_result.deinit(allocator);
-        var timestamp_token: ?Model.TokenBuffer = null;
-        defer if (timestamp_token) |*tok| tok.release(allocator);
-        var is_turn_context = false;
-        var is_event_msg = false;
-        var parse_failed = false;
-
-        while (!parse_failed) {
-            const key_token = scanner.nextAlloc(allocator, .alloc_if_needed) catch {
-                parse_failed = true;
-                break;
-            };
-
-            switch (key_token) {
-                .object_end => break,
-                .string => |slice| {
-                    var key = Model.TokenBuffer{ .slice = slice, .owned = null };
-                    defer key.release(allocator);
-                    parseObjectField(
+        if (read_bytes == 0) break;
+        bytes_consumed += read_bytes;
+        if (bytes_consumed > max_session_size) return;
+        var chunk = read_buffer[0..read_bytes];
+        while (chunk.len != 0) {
+            if (std.mem.indexOfScalar(u8, chunk, '\n')) |idx| {
+                if (partial_line.items.len == 0) {
+                    try processSessionLine(
                         allocator,
+                        arena,
                         &scanner,
-                        key.slice,
-                        &payload_result,
-                        &timestamp_token,
-                        &is_turn_context,
-                        &is_event_msg,
-                    ) catch {
-                        parse_failed = true;
-                    };
-                },
-                .allocated_string => |buf| {
-                    var key = Model.TokenBuffer{ .slice = buf, .owned = buf };
-                    defer key.release(allocator);
-                    parseObjectField(
+                        session_id,
+                        chunk[0..idx],
+                        events,
+                        &previous_totals,
+                        &current_model,
+                        &current_model_is_fallback,
+                    );
+                } else {
+                    try partial_line.appendSlice(allocator, chunk[0..idx]);
+                    try processSessionLine(
                         allocator,
+                        arena,
                         &scanner,
-                        key.slice,
-                        &payload_result,
-                        &timestamp_token,
-                        &is_turn_context,
-                        &is_event_msg,
-                    ) catch {
-                        parse_failed = true;
-                    };
-                },
-                else => {
-                    parse_failed = true;
-                },
-            }
-        }
-
-        if (parse_failed) continue;
-
-        _ = scanner.next() catch {};
-
-        if (timestamp_token == null) continue;
-
-        if (is_turn_context) {
-            if (payload_result.model) |token| {
-                var model_token = token;
-                payload_result.model = null;
-                if (model_token.slice.len != 0) {
-                    const duplicated = duplicateNonEmpty(arena, model_token.slice) catch null;
-                    if (duplicated) |model_copy| {
-                        current_model = model_copy;
-                        current_model_is_fallback = false;
-                    }
+                        session_id,
+                        partial_line.items,
+                        events,
+                        &previous_totals,
+                        &current_model,
+                        &current_model_is_fallback,
+                    );
+                    partial_line.clearRetainingCapacity();
                 }
-                model_token.release(allocator);
-            }
-            continue;
-        }
-
-        if (!is_event_msg) continue;
-
-        var payload_type_is_token_count = false;
-        if (payload_result.payload_type) |token| {
-            payload_type_is_token_count = std.mem.eql(u8, token.slice, "token_count");
-        }
-        if (!payload_type_is_token_count) continue;
-
-        var raw_timestamp = timestamp_token.?;
-        timestamp_token = null;
-        const timestamp_copy = try duplicateNonEmpty(arena, raw_timestamp.slice) orelse {
-            raw_timestamp.release(allocator);
-            continue;
-        };
-        raw_timestamp.release(allocator);
-        const iso_date = timeutil.localIsoDateFromTimestamp(timestamp_copy) catch {
-            continue;
-        };
-
-        var delta_usage: ?Model.TokenUsage = null;
-        if (payload_result.last_usage) |last_usage| {
-            delta_usage = Model.TokenUsage.fromRaw(last_usage);
-        } else if (payload_result.total_usage) |total_usage| {
-            delta_usage = Model.TokenUsage.deltaFrom(total_usage, previous_totals);
-        }
-        if (payload_result.total_usage) |total_usage| {
-            previous_totals = total_usage;
-        }
-
-        if (delta_usage == null) continue;
-
-        const delta = delta_usage.?;
-        if (delta.input_tokens == 0 and delta.cached_input_tokens == 0 and delta.output_tokens == 0 and delta.reasoning_output_tokens == 0) {
-            continue;
-        }
-
-        var extracted_model: ?[]const u8 = null;
-        if (payload_result.model) |token| {
-            var model_token = token;
-            payload_result.model = null;
-            if (model_token.slice.len != 0) {
-                extracted_model = try duplicateNonEmpty(arena, model_token.slice);
-                if (extracted_model == null) extracted_model = current_model;
-            }
-            model_token.release(allocator);
-        }
-
-        var model_name = extracted_model;
-        var is_fallback = false;
-        if (model_name == null) {
-            if (current_model) |known| {
-                model_name = known;
-                is_fallback = current_model_is_fallback;
+                chunk = chunk[idx + 1 ..];
             } else {
-                model_name = LEGACY_FALLBACK_MODEL;
-                is_fallback = true;
-                current_model = model_name;
-                current_model_is_fallback = true;
+                try partial_line.appendSlice(allocator, chunk);
+                break;
             }
-        } else {
-            current_model = model_name;
-            current_model_is_fallback = false;
         }
+    }
 
-        if (model_name == null) {
-            continue;
-        }
-        if (std.mem.eql(u8, model_name.?, LEGACY_FALLBACK_MODEL) and extracted_model == null) {
-            is_fallback = true;
-            current_model_is_fallback = true;
-        }
-
-        const event = Model.TokenUsageEvent{
-            .session_id = session_id,
-            .timestamp = timestamp_copy,
-            .local_iso_date = iso_date,
-            .model = model_name.?,
-            .usage = delta,
-            .is_fallback = is_fallback,
-        };
-        try events.append(allocator, event);
+    if (partial_line.items.len != 0) {
+        try processSessionLine(
+            allocator,
+            arena,
+            &scanner,
+            session_id,
+            partial_line.items,
+            events,
+            &previous_totals,
+            &current_model,
+            &current_model_is_fallback,
+        );
+        partial_line.clearRetainingCapacity();
     }
 }
 
@@ -729,6 +625,184 @@ fn resetScanner(scanner: *std.json.Scanner, input: []const u8) void {
     scanner.cursor = 0;
     scanner.is_end_of_input = true;
     scanner.diagnostics = null;
+}
+
+fn processSessionLine(
+    allocator: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    scanner: *std.json.Scanner,
+    session_id: []const u8,
+    line: []const u8,
+    events: *std.ArrayListUnmanaged(Model.TokenUsageEvent),
+    previous_totals: *?RawUsage,
+    current_model: *?[]const u8,
+    current_model_is_fallback: *bool,
+) !void {
+    const trimmed = std.mem.trim(u8, line, " \t\r\n");
+    if (trimmed.len == 0) return;
+
+    resetScanner(scanner, trimmed);
+
+    const start_token = scanner.next() catch {
+        return;
+    };
+    if (start_token != .object_begin) return;
+
+    var payload_result = PayloadResult{};
+    defer payload_result.deinit(allocator);
+    var timestamp_token: ?Model.TokenBuffer = null;
+    defer if (timestamp_token) |*tok| tok.release(allocator);
+    var is_turn_context = false;
+    var is_event_msg = false;
+    var parse_failed = false;
+
+    while (!parse_failed) {
+        const key_token = scanner.nextAlloc(allocator, .alloc_if_needed) catch {
+            parse_failed = true;
+            break;
+        };
+
+        switch (key_token) {
+            .object_end => break,
+            .string => |slice| {
+                var key = Model.TokenBuffer{ .slice = slice, .owned = null };
+                defer key.release(allocator);
+                parseObjectField(
+                    allocator,
+                    scanner,
+                    key.slice,
+                    &payload_result,
+                    &timestamp_token,
+                    &is_turn_context,
+                    &is_event_msg,
+                ) catch {
+                    parse_failed = true;
+                };
+            },
+            .allocated_string => |buf| {
+                var key = Model.TokenBuffer{ .slice = buf, .owned = buf };
+                defer key.release(allocator);
+                parseObjectField(
+                    allocator,
+                    scanner,
+                    key.slice,
+                    &payload_result,
+                    &timestamp_token,
+                    &is_turn_context,
+                    &is_event_msg,
+                ) catch {
+                    parse_failed = true;
+                };
+            },
+            else => {
+                parse_failed = true;
+            },
+        }
+    }
+
+    if (parse_failed) return;
+
+    _ = scanner.next() catch {};
+
+    if (timestamp_token == null) return;
+
+    if (is_turn_context) {
+        if (payload_result.model) |token| {
+            var model_token = token;
+            payload_result.model = null;
+            if (model_token.slice.len != 0) {
+                const duplicated = duplicateNonEmpty(arena, model_token.slice) catch null;
+                if (duplicated) |model_copy| {
+                    current_model.* = model_copy;
+                    current_model_is_fallback.* = false;
+                }
+            }
+            model_token.release(allocator);
+        }
+        return;
+    }
+
+    if (!is_event_msg) return;
+
+    var payload_type_is_token_count = false;
+    if (payload_result.payload_type) |token| {
+        payload_type_is_token_count = std.mem.eql(u8, token.slice, "token_count");
+    }
+    if (!payload_type_is_token_count) return;
+
+    var raw_timestamp = timestamp_token.?;
+    timestamp_token = null;
+    const timestamp_copy = try duplicateNonEmpty(arena, raw_timestamp.slice) orelse {
+        raw_timestamp.release(allocator);
+        return;
+    };
+    raw_timestamp.release(allocator);
+    const iso_date = timeutil.localIsoDateFromTimestamp(timestamp_copy) catch {
+        return;
+    };
+
+    var delta_usage: ?Model.TokenUsage = null;
+    if (payload_result.last_usage) |last_usage| {
+        delta_usage = Model.TokenUsage.fromRaw(last_usage);
+    } else if (payload_result.total_usage) |total_usage| {
+        delta_usage = Model.TokenUsage.deltaFrom(total_usage, previous_totals.*);
+    }
+    if (payload_result.total_usage) |total_usage| {
+        previous_totals.* = total_usage;
+    }
+
+    if (delta_usage == null) return;
+
+    const delta = delta_usage.?;
+    if (delta.input_tokens == 0 and delta.cached_input_tokens == 0 and delta.output_tokens == 0 and delta.reasoning_output_tokens == 0) {
+        return;
+    }
+
+    var extracted_model: ?[]const u8 = null;
+    if (payload_result.model) |token| {
+        var model_token = token;
+        payload_result.model = null;
+        if (model_token.slice.len != 0) {
+            extracted_model = try duplicateNonEmpty(arena, model_token.slice);
+            if (extracted_model == null) extracted_model = current_model.*;
+        }
+        model_token.release(allocator);
+    }
+
+    var model_name = extracted_model;
+    var is_fallback = false;
+    if (model_name == null) {
+        if (current_model.*) |known| {
+            model_name = known;
+            is_fallback = current_model_is_fallback.*;
+        } else {
+            model_name = LEGACY_FALLBACK_MODEL;
+            is_fallback = true;
+            current_model.* = model_name;
+            current_model_is_fallback.* = true;
+        }
+    } else {
+        current_model.* = model_name;
+        current_model_is_fallback.* = false;
+    }
+
+    if (model_name == null) {
+        return;
+    }
+    if (std.mem.eql(u8, model_name.?, LEGACY_FALLBACK_MODEL) and extracted_model == null) {
+        is_fallback = true;
+        current_model_is_fallback.* = true;
+    }
+
+    const event = Model.TokenUsageEvent{
+        .session_id = session_id,
+        .timestamp = timestamp_copy,
+        .local_iso_date = iso_date,
+        .model = model_name.?,
+        .usage = delta,
+        .is_fallback = is_fallback,
+    };
+    try events.append(allocator, event);
 }
 
 fn handlePayloadField(
