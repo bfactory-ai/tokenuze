@@ -949,7 +949,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 current_model_is_fallback.* = false;
             }
 
-            if (model_name == null) {
+            if (LEGACY_FALLBACK_MODEL == null and model_name == null) {
                 return;
             }
             if (LEGACY_FALLBACK_MODEL) |legacy| {
