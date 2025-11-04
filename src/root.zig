@@ -138,7 +138,7 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters, selection: Provid
         const elapsed = collect_phase.elapsedMs();
         collect_phase.finish();
         std.log.info(
-            "phase.{s} completed in {d:.2}ms (events += {d}, total_events={d}, pricing_models={d}, pricing_added={d})",
+            "phase '{s}' completed in {d:.2}ms (events += {d}, total_events={d}, pricing_models={d}, pricing_added={d})",
             .{
                 provider.phase_label,
                 elapsed,
