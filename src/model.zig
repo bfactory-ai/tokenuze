@@ -177,6 +177,7 @@ pub const TokenUsageEvent = struct {
     model: []const u8,
     usage: TokenUsage,
     is_fallback: bool,
+    display_input_tokens: u64,
 };
 
 pub const ModelPricing = struct {
@@ -194,12 +195,14 @@ pub const ModelSummary = struct {
     pricing_available: bool,
     cost_usd: f64,
     usage: TokenUsage,
+    display_input_tokens: u64 = 0,
 };
 
 pub const DailySummary = struct {
     iso_date: []const u8,
     display_date: []const u8,
     usage: TokenUsage,
+    display_input_tokens: u64,
     cost_usd: f64,
     models: std.ArrayListUnmanaged(ModelSummary),
     missing_pricing: std.ArrayListUnmanaged([]const u8),
@@ -210,6 +213,7 @@ pub const DailySummary = struct {
             .iso_date = iso_date,
             .display_date = display_date,
             .usage = .{},
+            .display_input_tokens = 0,
             .cost_usd = 0,
             .models = .{},
             .missing_pricing = .{},
@@ -224,12 +228,14 @@ pub const DailySummary = struct {
 
 pub const SummaryTotals = struct {
     usage: TokenUsage = .{},
+    display_input_tokens: u64 = 0,
     cost_usd: f64 = 0,
     missing_pricing: std.ArrayListUnmanaged([]const u8),
 
     pub fn init() SummaryTotals {
         return .{
             .usage = .{},
+            .display_input_tokens = 0,
             .cost_usd = 0,
             .missing_pricing = .{},
         };
@@ -328,6 +334,7 @@ pub fn accumulateTotals(
 ) void {
     for (summaries) |summary| {
         totals.usage.add(summary.usage);
+        totals.display_input_tokens += summary.display_input_tokens;
         totals.cost_usd += summary.cost_usd;
         for (summary.missing_pricing.items) |name| {
             appendUniqueString(allocator, &totals.missing_pricing, name) catch {};
@@ -362,10 +369,12 @@ fn updateSummary(
     event: *const TokenUsageEvent,
 ) !void {
     summary.usage.add(event.usage);
+    summary.display_input_tokens += event.display_input_tokens;
 
     if (findModelIndex(summary, event.model)) |idx| {
         var existing = &summary.models.items[idx];
         existing.usage.add(event.usage);
+        existing.display_input_tokens += event.display_input_tokens;
         if (event.is_fallback) existing.is_fallback = true;
         return;
     }
@@ -377,6 +386,7 @@ fn updateSummary(
         .pricing_available = false,
         .cost_usd = 0,
         .usage = event.usage,
+        .display_input_tokens = event.display_input_tokens,
     });
 }
 

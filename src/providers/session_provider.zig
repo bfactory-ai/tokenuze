@@ -481,6 +481,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                             .model = model_name.?,
                             .usage = delta,
                             .is_fallback = is_fallback,
+                            .display_input_tokens = computeDisplayInput(delta),
                         };
                         try events.append(allocator, event);
                     },
@@ -739,6 +740,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 .model = model_name.?,
                 .usage = usage,
                 .is_fallback = is_fallback,
+                .display_input_tokens = computeDisplayInput(usage),
             };
             try events.append(allocator, event);
         }
@@ -792,6 +794,11 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 delta.cached_input_tokens;
             delta.input_tokens -= overlap;
             delta.cached_input_tokens = overlap;
+        }
+
+        fn computeDisplayInput(usage: Model.TokenUsage) u64 {
+            if (!CACHED_OVERLAP) return usage.input_tokens;
+            return std.math.add(u64, usage.input_tokens, usage.cached_input_tokens) catch std.math.maxInt(u64);
         }
 
         fn parseObjectField(
@@ -1284,6 +1291,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 .model = model_name.?,
                 .usage = delta,
                 .is_fallback = is_fallback,
+                .display_input_tokens = computeDisplayInput(delta),
             };
             try events.append(allocator, event);
         }

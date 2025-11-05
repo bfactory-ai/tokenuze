@@ -43,7 +43,7 @@ pub const Renderer = struct {
         pub fn jsonStringify(self: TotalsView, jw: anytype) !void {
             const totals = self.totals;
             try jw.beginObject();
-            try writeUsageFields(jw, totals.usage);
+            try writeUsageFields(jw, totals.usage, totals.display_input_tokens);
             try jw.objectField("costUSD");
             try jw.write(totals.cost_usd);
             try jw.objectField("missingPricing");
@@ -62,7 +62,7 @@ pub const Renderer = struct {
             try jw.write(summary.display_date);
             try jw.objectField("isoDate");
             try jw.write(summary.iso_date);
-            try writeUsageFields(jw, summary.usage);
+            try writeUsageFields(jw, summary.usage, summary.display_input_tokens);
             try jw.objectField("costUSD");
             try jw.write(summary.cost_usd);
             try jw.objectField("models");
@@ -88,7 +88,7 @@ pub const Renderer = struct {
             try writeDisplayName(jw, model);
             try jw.objectField("isFallback");
             try jw.write(model.is_fallback);
-            try writeUsageFields(jw, model.usage);
+            try writeUsageFields(jw, model.usage, model.display_input_tokens);
             try jw.objectField("costUSD");
             try jw.write(model.cost_usd);
             try jw.objectField("pricingAvailable");
@@ -97,9 +97,9 @@ pub const Renderer = struct {
         }
     };
 
-    fn writeUsageFields(jw: anytype, usage: Model.TokenUsage) !void {
+    fn writeUsageFields(jw: anytype, usage: Model.TokenUsage, display_input: u64) !void {
         try jw.objectField("inputTokens");
-        try jw.write(usage.input_tokens);
+        try jw.write(display_input);
         try jw.objectField("cacheCreationInputTokens");
         try jw.write(usage.cache_creation_input_tokens);
         try jw.objectField("cachedInputTokens");
