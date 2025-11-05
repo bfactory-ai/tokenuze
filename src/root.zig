@@ -127,8 +127,7 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters, selection: Provid
     var summary_builder = Model.SummaryBuilder.init(allocator);
     defer summary_builder.deinit(allocator);
 
-    var thread_safe_allocator = std.heap.ThreadSafeAllocator{ .child_allocator = std.heap.page_allocator };
-    const temp_allocator = thread_safe_allocator.allocator();
+    const temp_allocator = std.heap.page_allocator;
 
     for (providers, 0..) |provider, idx| {
         if (!selection.includesIndex(idx)) continue;
