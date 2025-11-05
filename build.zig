@@ -1,5 +1,8 @@
 const std = @import("std");
 
+const project_info = @import("build.zig.zon");
+const tokenuze_version = std.SemanticVersion.parse(project_info.version) catch unreachable;
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{
         .default_target = .{
@@ -7,6 +10,7 @@ pub fn build(b: *std.Build) void {
         },
     });
     const optimize = b.standardOptimizeOption(.{});
+    const resolved_version = resolveVersion(b);
 
     const mod = b.addModule("tokenuze", .{
         .root_source_file = b.path("src/root.zig"),
@@ -27,6 +31,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.link_libc = true;
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", b.fmt("{f}", .{resolved_version}));
+    exe.root_module.addOptions("build_options", build_options);
     if (target.result.os.tag == .linux and target.result.abi == .musl) {
         exe.linkage = .static;
     }
@@ -54,4 +61,65 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     const test_cmd = b.addRunArtifact(unit_tests);
     test_step.dependOn(&test_cmd.step);
+}
+
+fn resolveVersion(b: *std.Build) std.SemanticVersion {
+    if (b.option([]const u8, "version-string", "Override the version of this build")) |override| {
+        return std.SemanticVersion.parse(override) catch |err| {
+            std.debug.panic("Expected -Dversion-string={s} to be a semantic version: {}", .{ override, err });
+        };
+    }
+
+    if (tokenuze_version.pre == null and tokenuze_version.build == null) return tokenuze_version;
+
+    const repo_dir = b.pathFromRoot(".");
+
+    var code: u8 = undefined;
+
+    _ = b.runAllowFail(
+        &.{ "git", "-C", repo_dir, "describe", "--tags", "--exact-match" },
+        &code,
+        .Ignore,
+    ) catch {
+        const git_hash_raw = b.runAllowFail(
+            &.{ "git", "-C", repo_dir, "rev-parse", "--short", "HEAD" },
+            &code,
+            .Ignore,
+        ) catch return tokenuze_version;
+        const commit_hash = std.mem.trim(u8, git_hash_raw, " \n\r");
+
+        const commit_count = blk: {
+            const base_tag_raw = b.runAllowFail(
+                &.{ "git", "-C", repo_dir, "describe", "--tags", "--match=*.0", "--abbrev=0" },
+                &code,
+                .Ignore,
+            ) catch {
+                const git_count_raw = b.runAllowFail(
+                    &.{ "git", "-C", repo_dir, "rev-list", "--count", "HEAD" },
+                    &code,
+                    .Ignore,
+                ) catch return tokenuze_version;
+                break :blk std.mem.trim(u8, git_count_raw, " \n\r");
+            };
+            const base_tag = std.mem.trim(u8, base_tag_raw, " \n\r");
+
+            const count_cmd = b.fmt("{s}..HEAD", .{base_tag});
+            const git_count_raw = b.runAllowFail(
+                &.{ "git", "-C", repo_dir, "rev-list", "--count", count_cmd },
+                &code,
+                .Ignore,
+            ) catch return tokenuze_version;
+            break :blk std.mem.trim(u8, git_count_raw, " \n\r");
+        };
+
+        return .{
+            .major = tokenuze_version.major,
+            .minor = tokenuze_version.minor,
+            .patch = tokenuze_version.patch,
+            .pre = b.fmt("dev.{s}", .{commit_count}),
+            .build = commit_hash,
+        };
+    };
+
+    return tokenuze_version;
 }
