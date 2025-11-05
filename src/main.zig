@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const tokenuze = @import("tokenuze");
+const build_options = @import("build_options");
 
 const CliError = error{
     InvalidUsage,
@@ -11,6 +12,7 @@ const CliOptions = struct {
     filters: tokenuze.DateFilters = .{},
     machine_id: bool = false,
     show_help: bool = false,
+    show_version: bool = false,
     providers: tokenuze.ProviderSelection = tokenuze.ProviderSelection.initAll(),
 };
 
@@ -41,6 +43,10 @@ pub fn main() !void {
         try printHelp();
         return;
     }
+    if (options.show_version) {
+        try printVersion();
+        return;
+    }
     if (options.machine_id) {
         try printMachineId(allocator);
         return;
@@ -60,6 +66,11 @@ fn parseOptions(allocator: std.mem.Allocator) CliError!CliOptions {
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             options.show_help = true;
+            break;
+        }
+
+        if (std.mem.eql(u8, arg, "--version")) {
+            options.show_version = true;
             break;
         }
 
@@ -171,6 +182,7 @@ fn printHelp() !void {
         .{ .label = "--pretty", .desc = "Expand JSON output for readability" },
         .{ .label = "--agent <name>", .desc = agent_desc },
         .{ .label = "--machine-id", .desc = "Print the stable machine id and exit" },
+        .{ .label = "--version", .desc = "Print the Tokenuze version and exit" },
         .{ .label = "-h, --help", .desc = "Show this message and exit" },
     };
 
@@ -201,6 +213,17 @@ fn printOptionLine(writer: anytype, label: []const u8, desc: []const u8, max_lab
     var padding = if (max_label > label.len) max_label - label.len else 0;
     while (padding > 0) : (padding -= 1) try writer.writeByte(' ');
     try writer.print("  {s}\n", .{desc});
+}
+
+fn printVersion() !void {
+    var buffer: [256]u8 = undefined;
+    var stdout = std.fs.File.stdout().writer(&buffer);
+    const writer = &stdout.interface;
+    try writer.print("{s}\n", .{build_options.version});
+    writer.flush() catch |err| switch (err) {
+        error.WriteFailed => {},
+        else => return err,
+    };
 }
 
 fn cliError(comptime fmt: []const u8, args: anytype) CliError {
