@@ -9,8 +9,8 @@ pub const Renderer = struct {
         pretty: bool,
     ) !void {
         const payload = Output{
-            .days = SummaryArray{ .items = summaries },
-            .total = TotalsView{ .totals = totals },
+            .daily = SummaryArray{ .items = summaries },
+            .totals = TotalsView{ .totals = totals },
         };
         var stringify = std.json.Stringify{
             .writer = writer,
@@ -21,8 +21,8 @@ pub const Renderer = struct {
     }
 
     const Output = struct {
-        days: SummaryArray,
-        total: TotalsView,
+        daily: SummaryArray,
+        totals: TotalsView,
     };
 
     const SummaryArray = struct {
@@ -66,33 +66,26 @@ pub const Renderer = struct {
             try jw.objectField("costUSD");
             try jw.write(summary.cost_usd);
             try jw.objectField("models");
-            try jw.beginArray();
-            for (summary.models.items) |*model| {
-                try jw.write(ModelSummaryView{ .model = model });
-            }
-            try jw.endArray();
+            try jw.write(ModelMapView{ .models = summary.models.items });
             try jw.objectField("missingPricing");
             try jw.write(summary.missing_pricing.items);
             try jw.endObject();
         }
     };
 
-    const ModelSummaryView = struct {
-        model: *const Model.ModelSummary,
+    const ModelMapView = struct {
+        models: []const Model.ModelSummary,
 
-        pub fn jsonStringify(self: ModelSummaryView, jw: anytype) !void {
-            const model = self.model;
+        pub fn jsonStringify(self: ModelMapView, jw: anytype) !void {
             try jw.beginObject();
-            try jw.objectField("name");
-            try jw.write(model.name);
-            try writeDisplayName(jw, model);
-            try jw.objectField("isFallback");
-            try jw.write(model.is_fallback);
-            try writeUsageFields(jw, model.usage, model.display_input_tokens);
-            try jw.objectField("costUSD");
-            try jw.write(model.cost_usd);
-            try jw.objectField("pricingAvailable");
-            try jw.write(model.pricing_available);
+            for (self.models) |*model| {
+                try jw.objectField(model.name);
+                try jw.beginObject();
+                try writeUsageFields(jw, model.usage, model.display_input_tokens);
+                try jw.objectField("isFallback");
+                try jw.write(model.is_fallback);
+                try jw.endObject();
+            }
             try jw.endObject();
         }
     };
@@ -110,16 +103,5 @@ pub const Renderer = struct {
         try jw.write(usage.reasoning_output_tokens);
         try jw.objectField("totalTokens");
         try jw.write(usage.total_tokens);
-    }
-
-    fn writeDisplayName(jw: anytype, model: *const Model.ModelSummary) !void {
-        try jw.objectField("displayName");
-        if (model.is_fallback) {
-            var buffer: [256]u8 = undefined;
-            const display = std.fmt.bufPrint(&buffer, "{s} (fallback)", .{model.name}) catch model.name;
-            try jw.write(display);
-        } else {
-            try jw.write(model.name);
-        }
     }
 };
