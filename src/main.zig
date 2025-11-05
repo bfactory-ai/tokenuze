@@ -194,7 +194,7 @@ const OptionLine = struct {
 
 fn printOptionLine(writer: anytype, label: []const u8, desc: []const u8, max_label: usize) !void {
     try writer.print("  {s}", .{label});
-    var padding = max_label - label.len;
+    var padding = if (max_label > label.len) max_label - label.len else 0;
     while (padding > 0) : (padding -= 1) try writer.writeByte(' ');
     try writer.print("  {s}\n", .{desc});
 }
