@@ -44,9 +44,9 @@ pub const Renderer = struct {
             const totals = self.totals;
             try jw.beginObject();
             try writeUsageFields(jw, totals.usage);
-            try jw.objectField("cost_usd");
+            try jw.objectField("costUSD");
             try jw.write(totals.cost_usd);
-            try jw.objectField("missing_pricing");
+            try jw.objectField("missingPricing");
             try jw.write(totals.missing_pricing.items);
             try jw.endObject();
         }
@@ -60,10 +60,10 @@ pub const Renderer = struct {
             try jw.beginObject();
             try jw.objectField("date");
             try jw.write(summary.display_date);
-            try jw.objectField("iso_date");
+            try jw.objectField("isoDate");
             try jw.write(summary.iso_date);
             try writeUsageFields(jw, summary.usage);
-            try jw.objectField("cost_usd");
+            try jw.objectField("costUSD");
             try jw.write(summary.cost_usd);
             try jw.objectField("models");
             try jw.beginArray();
@@ -71,7 +71,7 @@ pub const Renderer = struct {
                 try jw.write(ModelSummaryView{ .model = model });
             }
             try jw.endArray();
-            try jw.objectField("missing_pricing");
+            try jw.objectField("missingPricing");
             try jw.write(summary.missing_pricing.items);
             try jw.endObject();
         }
@@ -86,34 +86,34 @@ pub const Renderer = struct {
             try jw.objectField("name");
             try jw.write(model.name);
             try writeDisplayName(jw, model);
-            try jw.objectField("is_fallback");
+            try jw.objectField("isFallback");
             try jw.write(model.is_fallback);
             try writeUsageFields(jw, model.usage);
-            try jw.objectField("cost_usd");
+            try jw.objectField("costUSD");
             try jw.write(model.cost_usd);
-            try jw.objectField("pricing_available");
+            try jw.objectField("pricingAvailable");
             try jw.write(model.pricing_available);
             try jw.endObject();
         }
     };
 
     fn writeUsageFields(jw: anytype, usage: Model.TokenUsage) !void {
-        try jw.objectField("input_tokens");
+        try jw.objectField("inputTokens");
         try jw.write(usage.input_tokens);
-        try jw.objectField("cache_creation_input_tokens");
+        try jw.objectField("cacheCreationInputTokens");
         try jw.write(usage.cache_creation_input_tokens);
-        try jw.objectField("cached_input_tokens");
+        try jw.objectField("cachedInputTokens");
         try jw.write(usage.cached_input_tokens);
-        try jw.objectField("output_tokens");
+        try jw.objectField("outputTokens");
         try jw.write(usage.output_tokens);
-        try jw.objectField("reasoning_output_tokens");
+        try jw.objectField("reasoningOutputTokens");
         try jw.write(usage.reasoning_output_tokens);
-        try jw.objectField("total_tokens");
+        try jw.objectField("totalTokens");
         try jw.write(usage.total_tokens);
     }
 
     fn writeDisplayName(jw: anytype, model: *const Model.ModelSummary) !void {
-        try jw.objectField("display_name");
+        try jw.objectField("displayName");
         if (model.is_fallback) {
             var buffer: [256]u8 = undefined;
             const display = std.fmt.bufPrint(&buffer, "{s} (fallback)", .{model.name}) catch model.name;
