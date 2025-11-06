@@ -351,8 +351,7 @@ const Payload = struct {
             try jw.beginObject();
             try jw.objectField("sessions");
             const trimmed_sessions = std.mem.trim(u8, provider.sessions_summary, " \n\r\t");
-            const sessions_blob = if (trimmed_sessions.len == 0) empty_sessions_json else trimmed_sessions;
-            try jw.write(RawJson{ .text = sessions_blob });
+            try jw.write(RawJson{ .text = trimmed_sessions });
             try jw.objectField("daily");
             const trimmed_daily = std.mem.trim(u8, provider.daily_summary, " \n\r\t");
             try jw.write(RawJson{ .text = trimmed_daily });
