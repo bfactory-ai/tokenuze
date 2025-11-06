@@ -357,8 +357,7 @@ const Payload = struct {
             try jw.write(RawJson{ .text = trimmed_daily });
             try jw.objectField("weekly");
             const trimmed_weekly = std.mem.trim(u8, provider.weekly_summary, " \n\r\t");
-            const weekly_blob = if (trimmed_weekly.len == 0) empty_weekly_json else trimmed_weekly;
-            try jw.write(RawJson{ .text = weekly_blob });
+            try jw.write(RawJson{ .text = trimmed_weekly });
             try jw.endObject();
         }
 
