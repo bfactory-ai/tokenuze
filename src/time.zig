@@ -145,10 +145,25 @@ pub fn formatTimezoneLabelAlloc(allocator: std.mem.Allocator, offset_minutes: i3
 
 test "isoDateForTimezone adjusts across day boundaries" {
     const positive = try isoDateForTimezone("2025-09-01T16:30:00Z", 9 * 60);
-    try std.testing.expectEqualStrings("2025-09-02", &positive);
+    try std.testing.expectEqualStrings("2025-09-02", positive[0..]);
 
     const negative = try isoDateForTimezone("2025-09-01T04:00:00Z", -5 * 60);
-    try std.testing.expectEqualStrings("2025-08-31", &negative);
+    try std.testing.expectEqualStrings("2025-08-31", negative[0..]);
+}
+
+test "parseTimezoneOffsetMinutes handles various formats" {
+    try std.testing.expectEqual(@as(i32, 0), try parseTimezoneOffsetMinutes("Z"));
+    try std.testing.expectEqual(@as(i32, 0), try parseTimezoneOffsetMinutes("UTC"));
+    try std.testing.expectEqual(@as(i32, 330), try parseTimezoneOffsetMinutes("+05:30"));
+    try std.testing.expectEqual(@as(i32, -330), try parseTimezoneOffsetMinutes("-05:30"));
+    try std.testing.expectEqual(@as(i32, 345), try parseTimezoneOffsetMinutes("UTC+05:45"));
+    try std.testing.expectEqual(@as(i32, 720), try parseTimezoneOffsetMinutes("+12"));
+    try std.testing.expectEqual(@as(i32, -720), try parseTimezoneOffsetMinutes("-12"));
+    try std.testing.expectEqual(@as(i32, 90), try parseTimezoneOffsetMinutes("+0130"));
+    try std.testing.expectError(error.InvalidFormat, parseTimezoneOffsetMinutes("invalid"));
+    try std.testing.expectEqual(@as(i32, 600), try parseTimezoneOffsetMinutes("UTC10"));
+    try std.testing.expectError(error.InvalidFormat, parseTimezoneOffsetMinutes("+1:3"));
+    try std.testing.expectError(error.OutOfRange, parseTimezoneOffsetMinutes("+15"));
 }
 
 fn parseIso8601ToUtcSeconds(timestamp: []const u8) TimestampError!i64 {
