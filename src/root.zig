@@ -23,6 +23,7 @@ pub const parseFilterDate = Model.parseFilterDate;
 pub const parseTimezoneOffsetMinutes = timeutil.parseTimezoneOffsetMinutes;
 pub const detectLocalTimezoneOffsetMinutes = timeutil.detectLocalTimezoneOffsetMinutes;
 pub const DEFAULT_TIMEZONE_OFFSET_MINUTES = timeutil.DEFAULT_TIMEZONE_OFFSET_MINUTES;
+pub const formatTimezoneLabel = timeutil.formatTimezoneLabel;
 
 const CollectFn = *const fn (
     std.mem.Allocator,

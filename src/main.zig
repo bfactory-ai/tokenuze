@@ -290,12 +290,7 @@ fn printOptionLine(writer: anytype, label: []const u8, desc: []const u8, max_lab
 }
 
 fn formatOffsetLabel(buffer: *[16]u8, offset_minutes: i32) []const u8 {
-    const clamped = std.math.clamp(offset_minutes, -12 * 60, 14 * 60);
-    const sign: u8 = if (clamped >= 0) '+' else '-';
-    const abs_minutes = @abs(clamped);
-    const hours = abs_minutes / 60;
-    const mins = abs_minutes % 60;
-    return std.fmt.bufPrint(buffer, "UTC{c}{d:0>2}:{d:0>2}", .{ sign, hours, mins }) catch unreachable;
+    return tokenuze.formatTimezoneLabel(buffer, offset_minutes);
 }
 
 fn printVersion() !void {

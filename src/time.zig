@@ -65,8 +65,8 @@ pub fn parseTimezoneOffsetMinutes(input: []const u8) ParseTimezoneError!i32 {
         hours = std.fmt.parseInt(i32, hours_part, 10) catch return error.InvalidFormat;
         minutes = std.fmt.parseInt(i32, minutes_part, 10) catch return error.InvalidFormat;
     } else {
-        for (remaining) |c| {
-            if (!std.ascii.isDigit(c)) return error.InvalidFormat;
+        for (remaining) |ch| {
+            if (!std.ascii.isDigit(ch)) return error.InvalidFormat;
         }
         switch (remaining.len) {
             1, 2 => {
@@ -124,7 +124,7 @@ pub const TimezoneError = error{TimezoneUnavailable};
 
 pub fn detectLocalTimezoneLabel(allocator: std.mem.Allocator) ![]u8 {
     const offset = detectLocalTimezoneOffsetMinutes() catch return allocator.dupe(u8, "UTC+00:00");
-    return formatTimezoneLabel(allocator, offset);
+    return formatTimezoneLabelAlloc(allocator, offset);
 }
 
 pub fn detectLocalTimezoneOffsetMinutes() !i32 {
@@ -135,13 +135,19 @@ pub fn detectLocalTimezoneOffsetMinutes() !i32 {
     };
 }
 
-pub fn formatTimezoneLabel(allocator: std.mem.Allocator, offset_minutes: i32) ![]u8 {
+pub fn formatTimezoneLabel(buffer: *[16]u8, offset_minutes: i32) []const u8 {
     const clamped = std.math.clamp(offset_minutes, -12 * 60, 14 * 60);
     const sign: u8 = if (clamped >= 0) '+' else '-';
     const abs_minutes = @abs(clamped);
     const hours = abs_minutes / 60;
     const mins = abs_minutes % 60;
-    return std.fmt.allocPrint(allocator, "UTC{c}{d:0>2}:{d:0>2}", .{ sign, hours, mins });
+    return std.fmt.bufPrint(buffer, "UTC{c}{d:0>2}:{d:0>2}", .{ sign, hours, mins }) catch unreachable;
+}
+
+pub fn formatTimezoneLabelAlloc(allocator: std.mem.Allocator, offset_minutes: i32) ![]u8 {
+    var buffer: [16]u8 = undefined;
+    const label = formatTimezoneLabel(&buffer, offset_minutes);
+    return allocator.dupe(u8, label);
 }
 
 fn parseIso8601ToUtcSeconds(timestamp: []const u8) TimestampError!i64 {

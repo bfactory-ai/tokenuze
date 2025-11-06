@@ -40,7 +40,7 @@ pub fn run(
 
     if (providers.len == 0) return error.NoProvidersSelected;
 
-    const timezone_label = timeutil.formatTimezoneLabel(allocator, timezone_offset_minutes) catch
+    const timezone_label = timeutil.formatTimezoneLabelAlloc(allocator, timezone_offset_minutes) catch
         try allocator.dupe(u8, "UTC+00:00");
     defer allocator.free(timezone_label);
 
