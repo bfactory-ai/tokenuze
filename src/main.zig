@@ -60,8 +60,17 @@ pub fn main() !void {
             if (!options.providers.includesIndex(idx)) continue;
             var single = tokenuze.ProviderSelection.initEmpty();
             single.includeIndex(idx);
-            const daily = try tokenuze.renderSummaryAlloc(allocator, options.filters, single);
-            try uploads.append(allocator, .{ .name = provider.name, .daily_summary = daily });
+            var report = try tokenuze.collectUploadReport(allocator, options.filters, single);
+            const entry = tokenuze.uploader.ProviderUpload{
+                .name = provider.name,
+                .daily_summary = report.daily_json,
+                .sessions_summary = report.sessions_json,
+                .weekly_summary = report.weekly_json,
+            };
+            uploads.append(allocator, entry) catch |err| {
+                report.deinit(allocator);
+                return err;
+            };
         }
 
         if (uploads.items.len == 0) {
@@ -69,7 +78,11 @@ pub fn main() !void {
             return;
         }
 
-        defer for (uploads.items) |entry| allocator.free(entry.daily_summary);
+        defer for (uploads.items) |entry| {
+            allocator.free(entry.daily_summary);
+            allocator.free(entry.sessions_summary);
+            allocator.free(entry.weekly_summary);
+        };
         try tokenuze.uploader.run(allocator, uploads.items);
         return;
     }

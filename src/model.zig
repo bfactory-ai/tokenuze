@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_util = @import("io_util.zig");
 
 pub const MILLION = 1_000_000.0;
 pub const PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -262,16 +263,293 @@ pub const SummaryTotals = struct {
     }
 };
 
+pub const SessionRecorder = struct {
+    sessions: std.StringHashMap(SessionEntry),
+    totals: TokenUsage = .{},
+    total_cost_usd: f64 = 0,
+
+    pub fn init(allocator: std.mem.Allocator) SessionRecorder {
+        return .{
+            .sessions = std.StringHashMap(SessionEntry).init(allocator),
+            .totals = .{},
+            .total_cost_usd = 0,
+        };
+    }
+
+    pub fn deinit(self: *SessionRecorder, allocator: std.mem.Allocator) void {
+        var iterator = self.sessions.iterator();
+        while (iterator.next()) |entry| {
+            entry.value_ptr.deinit(allocator);
+            allocator.free(entry.key_ptr.*);
+        }
+        self.sessions.deinit();
+        self.* = undefined;
+    }
+
+    pub fn ingest(self: *SessionRecorder, allocator: std.mem.Allocator, event: *const TokenUsageEvent) !void {
+        var gop = try self.sessions.getOrPut(event.session_id);
+        if (!gop.found_existing) {
+            const owned_id = try allocator.dupe(u8, event.session_id);
+            errdefer allocator.free(owned_id);
+            const parts = splitSessionId(owned_id);
+            gop.key_ptr.* = owned_id;
+            gop.value_ptr.* = SessionEntry.init(parts.session_id, parts.directory, parts.session_file);
+        }
+        var session = gop.value_ptr;
+        try session.recordEvent(allocator, event);
+        self.totals.add(event.usage);
+    }
+
+    pub fn applyPricing(self: *SessionRecorder, pricing: *PricingMap) void {
+        self.total_cost_usd = 0;
+        var iterator = self.sessions.iterator();
+        while (iterator.next()) |entry| {
+            var session = entry.value_ptr;
+            session.applyPricing(pricing);
+            self.total_cost_usd += session.cost_usd;
+        }
+    }
+
+    pub fn renderJson(self: *const SessionRecorder, allocator: std.mem.Allocator) ![]u8 {
+        var buffer = std.ArrayList(u8).empty;
+        defer buffer.deinit(allocator);
+        var writer_state = io_util.ArrayWriter.init(&buffer, allocator);
+        var stringify = std.json.Stringify{ .writer = writer_state.writer(), .options = .{} };
+        try stringify.beginObject();
+        try stringify.objectField("sessions");
+        try self.writeSessionsArray(allocator, &stringify);
+        try stringify.objectField("totals");
+        try writeUsageObject(&stringify, self.totals, self.total_cost_usd);
+        try stringify.endObject();
+        return buffer.toOwnedSlice(allocator);
+    }
+
+    fn writeSessionsArray(self: *const SessionRecorder, allocator: std.mem.Allocator, jw: anytype) !void {
+        var pointers = try self.collectSessionPointers(allocator);
+        defer pointers.deinit(allocator);
+        try jw.beginArray();
+        for (pointers.items) |session| {
+            try session.writeJson(jw);
+        }
+        try jw.endArray();
+    }
+
+    fn collectSessionPointers(
+        self: *const SessionRecorder,
+        allocator: std.mem.Allocator,
+    ) !std.ArrayListUnmanaged(*const SessionEntry) {
+        var list = std.ArrayListUnmanaged(*const SessionEntry){};
+        errdefer list.deinit(allocator);
+        var iterator = self.sessions.iterator();
+        while (iterator.next()) |entry| {
+            try list.append(allocator, entry.value_ptr);
+        }
+        std.sort.pdq(*const SessionEntry, list.items, {}, sessionLessThan);
+        return list;
+    }
+
+    fn sessionLessThan(_: void, lhs: *const SessionEntry, rhs: *const SessionEntry) bool {
+        return std.mem.lessThan(u8, lhs.session_id, rhs.session_id);
+    }
+
+    fn writeUsageObject(jw: anytype, usage: TokenUsage, cost: f64) !void {
+        try jw.beginObject();
+        try jw.objectField("inputTokens");
+        try jw.write(usage.input_tokens);
+        try jw.objectField("cachedInputTokens");
+        try jw.write(usage.cached_input_tokens);
+        try jw.objectField("outputTokens");
+        try jw.write(usage.output_tokens);
+        try jw.objectField("reasoningOutputTokens");
+        try jw.write(usage.reasoning_output_tokens);
+        try jw.objectField("totalTokens");
+        try jw.write(usage.total_tokens);
+        try jw.objectField("costUSD");
+        try jw.write(cost);
+        try jw.endObject();
+    }
+
+    fn splitSessionId(session_id: []const u8) struct {
+        session_id: []const u8,
+        directory: []const u8,
+        session_file: []const u8,
+    } {
+        if (std.mem.lastIndexOfScalar(u8, session_id, '/')) |last_slash| {
+            const directory = session_id[0..last_slash];
+            const file = session_id[last_slash + 1 ..];
+            return .{ .session_id = session_id, .directory = directory, .session_file = file };
+        }
+        return .{ .session_id = session_id, .directory = "", .session_file = session_id };
+    }
+
+    const SessionEntry = struct {
+        session_id: []const u8,
+        directory: []const u8,
+        session_file: []const u8,
+        last_activity: ?[]const u8 = null,
+        usage: TokenUsage = .{},
+        models: std.ArrayListUnmanaged(SessionModel) = .{},
+        cost_usd: f64 = 0,
+
+        fn init(session_id: []const u8, directory: []const u8, session_file: []const u8) SessionEntry {
+            return .{
+                .session_id = session_id,
+                .directory = directory,
+                .session_file = session_file,
+                .last_activity = null,
+                .usage = .{},
+                .models = .{},
+                .cost_usd = 0,
+            };
+        }
+
+        fn deinit(self: *SessionEntry, allocator: std.mem.Allocator) void {
+            if (self.last_activity) |timestamp| {
+                allocator.free(timestamp);
+            }
+            for (self.models.items) |model| {
+                allocator.free(model.name);
+            }
+            self.models.deinit(allocator);
+            self.* = undefined;
+        }
+
+        fn recordEvent(self: *SessionEntry, allocator: std.mem.Allocator, event: *const TokenUsageEvent) !void {
+            self.usage.add(event.usage);
+            try self.updateLastActivity(allocator, event.timestamp);
+            try self.applyModelUsage(allocator, event.model, event.usage, event.is_fallback);
+        }
+
+        fn applyPricing(self: *SessionEntry, pricing: *PricingMap) void {
+            self.cost_usd = 0;
+            for (self.models.items) |*model| {
+                if (pricing.get(model.name)) |rate| {
+                    model.pricing_available = true;
+                    model.cost_usd = model.usage.cost(rate);
+                    self.cost_usd += model.cost_usd;
+                } else {
+                    model.pricing_available = false;
+                    model.cost_usd = 0;
+                }
+            }
+            std.sort.pdq(SessionModel, self.models.items, {}, sessionModelLessThan);
+        }
+
+        fn updateLastActivity(self: *SessionEntry, allocator: std.mem.Allocator, timestamp: []const u8) !void {
+            const owned = try allocator.dupe(u8, timestamp);
+            if (self.last_activity) |existing| {
+                if (std.mem.lessThan(u8, existing, owned)) {
+                    allocator.free(existing);
+                    self.last_activity = owned;
+                } else {
+                    allocator.free(owned);
+                }
+            } else {
+                self.last_activity = owned;
+            }
+        }
+
+        fn applyModelUsage(
+            self: *SessionEntry,
+            allocator: std.mem.Allocator,
+            model_name: []const u8,
+            usage: TokenUsage,
+            is_fallback: bool,
+        ) !void {
+            for (self.models.items) |*existing| {
+                if (std.mem.eql(u8, existing.name, model_name)) {
+                    existing.usage.add(usage);
+                    if (is_fallback) existing.is_fallback = true;
+                    return;
+                }
+            }
+
+            const owned_name = try allocator.dupe(u8, model_name);
+            errdefer allocator.free(owned_name);
+            try self.models.append(allocator, .{
+                .name = owned_name,
+                .usage = usage,
+                .is_fallback = is_fallback,
+                .pricing_available = false,
+                .cost_usd = 0,
+            });
+        }
+
+        fn writeJson(self: *const SessionEntry, jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("sessionId");
+            try jw.write(self.session_id);
+            try jw.objectField("lastActivity");
+            if (self.last_activity) |timestamp| {
+                try jw.write(timestamp);
+            } else {
+                try jw.write("");
+            }
+            try jw.objectField("sessionFile");
+            try jw.write(self.session_file);
+            try jw.objectField("directory");
+            try jw.write(self.directory);
+            try jw.objectField("inputTokens");
+            try jw.write(self.usage.input_tokens);
+            try jw.objectField("cachedInputTokens");
+            try jw.write(self.usage.cached_input_tokens);
+            try jw.objectField("outputTokens");
+            try jw.write(self.usage.output_tokens);
+            try jw.objectField("reasoningOutputTokens");
+            try jw.write(self.usage.reasoning_output_tokens);
+            try jw.objectField("totalTokens");
+            try jw.write(self.usage.total_tokens);
+            try jw.objectField("costUSD");
+            try jw.write(self.cost_usd);
+            try jw.objectField("models");
+            try jw.beginObject();
+            for (self.models.items) |model| {
+                try jw.objectField(model.name);
+                try jw.beginObject();
+                try jw.objectField("inputTokens");
+                try jw.write(model.usage.input_tokens);
+                try jw.objectField("cachedInputTokens");
+                try jw.write(model.usage.cached_input_tokens);
+                try jw.objectField("outputTokens");
+                try jw.write(model.usage.output_tokens);
+                try jw.objectField("reasoningOutputTokens");
+                try jw.write(model.usage.reasoning_output_tokens);
+                try jw.objectField("totalTokens");
+                try jw.write(model.usage.total_tokens);
+                try jw.objectField("isFallback");
+                try jw.write(model.is_fallback);
+                try jw.endObject();
+            }
+            try jw.endObject();
+            try jw.endObject();
+        }
+    };
+
+    const SessionModel = struct {
+        name: []const u8,
+        usage: TokenUsage,
+        is_fallback: bool,
+        pricing_available: bool,
+        cost_usd: f64,
+    };
+
+    fn sessionModelLessThan(_: void, lhs: SessionModel, rhs: SessionModel) bool {
+        return std.mem.lessThan(u8, lhs.name, rhs.name);
+    }
+};
+
 pub const SummaryBuilder = struct {
     summaries: std.ArrayListUnmanaged(DailySummary) = .{},
     date_index: std.StringHashMap(usize),
     event_count: usize = 0,
+    session_recorder: ?*SessionRecorder = null,
 
     pub fn init(allocator: std.mem.Allocator) SummaryBuilder {
         return .{
             .summaries = .{},
             .date_index = std.StringHashMap(usize).init(allocator),
             .event_count = 0,
+            .session_recorder = null,
         };
     }
 
@@ -281,6 +559,11 @@ pub const SummaryBuilder = struct {
         }
         self.summaries.deinit(allocator);
         self.date_index.deinit();
+        self.session_recorder = null;
+    }
+
+    pub fn attachSessionRecorder(self: *SummaryBuilder, recorder: *SessionRecorder) void {
+        self.session_recorder = recorder;
     }
 
     pub fn ingest(
@@ -296,15 +579,17 @@ pub const SummaryBuilder = struct {
 
         if (self.date_index.get(iso_slice)) |idx| {
             try updateSummary(&self.summaries.items[idx], allocator, event);
-            return;
+        } else {
+            const iso_copy = try allocator.dupe(u8, iso_slice);
+            const display = try formatDisplayDate(allocator, iso_copy);
+            try self.summaries.append(allocator, DailySummary.init(allocator, iso_copy, display));
+            const summary_idx = self.summaries.items.len - 1;
+            try self.date_index.put(self.summaries.items[summary_idx].iso_date, summary_idx);
+            try updateSummary(&self.summaries.items[summary_idx], allocator, event);
         }
-
-        const iso_copy = try allocator.dupe(u8, iso_slice);
-        const display = try formatDisplayDate(allocator, iso_copy);
-        try self.summaries.append(allocator, DailySummary.init(allocator, iso_copy, display));
-        const summary_idx = self.summaries.items.len - 1;
-        try self.date_index.put(self.summaries.items[summary_idx].iso_date, summary_idx);
-        try updateSummary(&self.summaries.items[summary_idx], allocator, event);
+        if (self.session_recorder) |recorder| {
+            try recorder.ingest(allocator, event);
+        }
     }
 
     pub fn items(self: *SummaryBuilder) []DailySummary {

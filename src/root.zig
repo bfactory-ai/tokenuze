@@ -7,6 +7,7 @@ const render = @import("render.zig");
 const io_util = @import("io_util.zig");
 pub const machine_id = @import("machine_id.zig");
 pub const uploader = @import("upload.zig");
+const empty_weekly_json = "{\"weekly\":[]}";
 
 pub const std_options = .{
     .log_level = .info,
@@ -50,6 +51,19 @@ const SummaryResult = struct {
     fn deinit(self: *SummaryResult, allocator: std.mem.Allocator) void {
         self.builder.deinit(allocator);
         self.totals.deinit(allocator);
+    }
+};
+
+pub const UploadReport = struct {
+    daily_json: []u8,
+    sessions_json: []u8,
+    weekly_json: []u8,
+
+    pub fn deinit(self: *UploadReport, allocator: std.mem.Allocator) void {
+        allocator.free(self.daily_json);
+        allocator.free(self.sessions_json);
+        allocator.free(self.weekly_json);
+        self.* = undefined;
     }
 };
 
@@ -134,14 +148,36 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters, selection: Provid
 }
 
 pub fn renderSummaryAlloc(allocator: std.mem.Allocator, filters: DateFilters, selection: ProviderSelection) ![]u8 {
-    var summary = try collectSummary(allocator, filters, selection, false);
+    var summary = try collectSummaryInternal(allocator, filters, selection, false, null);
+    defer summary.deinit(allocator);
+    return try renderSummaryBuffer(allocator, summary.builder.items(), &summary.totals, filters.pretty_output);
+}
+
+pub fn collectUploadReport(
+    allocator: std.mem.Allocator,
+    filters: DateFilters,
+    selection: ProviderSelection,
+) !UploadReport {
+    var recorder = Model.SessionRecorder.init(allocator);
+    defer recorder.deinit(allocator);
+
+    var summary = try collectSummaryInternal(allocator, filters, selection, false, &recorder);
     defer summary.deinit(allocator);
 
-    var buffer = std.ArrayList(u8).empty;
-    defer buffer.deinit(allocator);
-    var writer_state = io_util.ArrayWriter.init(&buffer, allocator);
-    try render.Renderer.writeSummary(writer_state.writer(), summary.builder.items(), &summary.totals, filters.pretty_output);
-    return buffer.toOwnedSlice(allocator);
+    const daily_json = try renderSummaryBuffer(allocator, summary.builder.items(), &summary.totals, filters.pretty_output);
+    errdefer allocator.free(daily_json);
+
+    const sessions_json = try recorder.renderJson(allocator);
+    errdefer allocator.free(sessions_json);
+
+    const weekly_json = try allocator.dupe(u8, empty_weekly_json);
+    errdefer allocator.free(weekly_json);
+
+    return UploadReport{
+        .daily_json = daily_json,
+        .sessions_json = sessions_json,
+        .weekly_json = weekly_json,
+    };
 }
 
 const PhaseTracker = struct {
@@ -185,8 +221,19 @@ fn collectSummary(
     selection: ProviderSelection,
     enable_progress: bool,
 ) !SummaryResult {
+    return collectSummaryInternal(allocator, filters, selection, enable_progress, null);
+}
+
+fn collectSummaryInternal(
+    allocator: std.mem.Allocator,
+    filters: DateFilters,
+    selection: ProviderSelection,
+    enable_progress: bool,
+    session_recorder: ?*Model.SessionRecorder,
+) !SummaryResult {
     var summary_builder = Model.SummaryBuilder.init(allocator);
     errdefer summary_builder.deinit(allocator);
+    if (session_recorder) |recorder| summary_builder.attachSessionRecorder(recorder);
 
     var totals = SummaryTotals.init();
     errdefer totals.deinit(allocator);
@@ -261,6 +308,9 @@ fn collectSummary(
         "phase.apply_pricing completed in {d:.2}ms (days={d})",
         .{ pricing_elapsed, summaries.len },
     );
+    if (session_recorder) |recorder| {
+        recorder.applyPricing(&pricing_map);
+    }
 
     const sort_elapsed = blk: {
         var sort_days_phase = try PhaseTracker.start(progress_parent, "sort days", 0);
@@ -297,4 +347,17 @@ fn summaryLessThan(_: void, lhs: DailySummary, rhs: DailySummary) bool {
 
 fn modelLessThan(_: void, lhs: ModelSummary, rhs: ModelSummary) bool {
     return std.mem.lessThan(u8, lhs.name, rhs.name);
+}
+
+fn renderSummaryBuffer(
+    allocator: std.mem.Allocator,
+    summaries: []const Model.DailySummary,
+    totals: *const Model.SummaryTotals,
+    pretty: bool,
+) ![]u8 {
+    var buffer = std.ArrayList(u8).empty;
+    defer buffer.deinit(allocator);
+    var writer_state = io_util.ArrayWriter.init(&buffer, allocator);
+    try render.Renderer.writeSummary(writer_state.writer(), summaries, totals, pretty);
+    return buffer.toOwnedSlice(allocator);
 }
