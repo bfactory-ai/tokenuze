@@ -83,7 +83,11 @@ pub fn main() !void {
             allocator.free(entry.sessions_summary);
             allocator.free(entry.weekly_summary);
         };
-        try tokenuze.uploader.run(allocator, uploads.items);
+        try tokenuze.uploader.run(
+            allocator,
+            uploads.items,
+            options.filters.timezone_offset_minutes,
+        );
         return;
     }
     try tokenuze.run(allocator, options.filters, options.providers);
@@ -96,6 +100,7 @@ fn parseOptions(allocator: std.mem.Allocator) CliError!CliOptions {
     _ = args.next(); // program name
 
     var options = CliOptions{};
+    var timezone_specified = false;
     var agents_specified = false;
     var machine_id_only = false;
     while (args.next()) |arg| {
@@ -153,6 +158,16 @@ fn parseOptions(allocator: std.mem.Allocator) CliError!CliOptions {
             continue;
         }
 
+        if (std.mem.eql(u8, arg, "--tz")) {
+            const value = args.next() orelse return cliError("missing value for --tz", .{});
+            const offset = tokenuze.parseTimezoneOffsetMinutes(value) catch {
+                return cliError("--tz expects an offset like '+09', '-05:30', or 'UTC'", .{});
+            };
+            options.filters.timezone_offset_minutes = @intCast(offset);
+            timezone_specified = true;
+            continue;
+        }
+
         if (std.mem.eql(u8, arg, "--agent")) {
             const value = args.next() orelse return cliError("missing value for --agent", .{});
             if (!agents_specified) {
@@ -180,6 +195,13 @@ fn parseOptions(allocator: std.mem.Allocator) CliError!CliOptions {
                 return cliError("--until must be on or after --since", .{});
             }
         }
+    }
+
+    if (!timezone_specified) {
+        const fallback_offset = tokenuze.DEFAULT_TIMEZONE_OFFSET_MINUTES;
+        const detected = tokenuze.detectLocalTimezoneOffsetMinutes() catch fallback_offset;
+        const clamped = std.math.clamp(detected, -12 * 60, 14 * 60);
+        options.filters.timezone_offset_minutes = @intCast(clamped);
     }
 
     return options;
@@ -216,9 +238,20 @@ fn printHelp() !void {
         "Restrict collection to selected providers (available: {s})",
         .{providerListDescription()},
     );
+    const default_tz_offset = tokenuze.detectLocalTimezoneOffsetMinutes() catch tokenuze.DEFAULT_TIMEZONE_OFFSET_MINUTES;
+    var tz_label_buf: [16]u8 = undefined;
+    const tz_label = formatOffsetLabel(&tz_label_buf, default_tz_offset);
+    var tz_desc_buf: [160]u8 = undefined;
+    const tz_desc = try std.fmt.bufPrint(
+        &tz_desc_buf,
+        "Bucket dates in the provided timezone (default: {s})",
+        .{tz_label},
+    );
+
     const help_lines = [_]OptionLine{
         .{ .label = "--since YYYYMMDD", .desc = "Only include events on/after the date" },
         .{ .label = "--until YYYYMMDD", .desc = "Only include events on/before the date" },
+        .{ .label = "--tz <offset>", .desc = tz_desc },
         .{ .label = "--pretty", .desc = "Expand JSON output for readability" },
         .{ .label = "--agent <name>", .desc = agent_desc },
         .{ .label = "--upload", .desc = "Upload Tokenuze JSON via DASHBOARD_API_* envs" },
@@ -254,6 +287,10 @@ fn printOptionLine(writer: anytype, label: []const u8, desc: []const u8, max_lab
     var padding = if (max_label > label.len) max_label - label.len else 0;
     while (padding > 0) : (padding -= 1) try writer.writeByte(' ');
     try writer.print("  {s}\n", .{desc});
+}
+
+fn formatOffsetLabel(buffer: *[16]u8, offset_minutes: i32) []const u8 {
+    return tokenuze.formatTimezoneLabel(buffer, offset_minutes);
 }
 
 fn printVersion() !void {
