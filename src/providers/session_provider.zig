@@ -195,33 +195,36 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 temp_allocator: std.mem.Allocator,
                 filters: Model.DateFilters,
                 progress: ?std.Progress.Node,
-                files_scanned: *std.atomic.Value(usize),
-                files_inflight: *std.atomic.Value(usize),
+                sessions_dir: []const u8,
+                paths: []const []const u8,
+                completed: *std.atomic.Value(usize),
                 deduper: ?*MessageDeduper,
                 consumer: EventConsumer,
             };
 
             const ProcessArgs = struct {
-                absolute_path: []u8,
-                relative_path: []u8,
+                index: usize,
             };
 
             const ProcessFn = struct {
                 fn run(shared: *SharedContext, args: ProcessArgs) void {
-                    defer shared.temp_allocator.free(args.absolute_path);
-                    defer shared.temp_allocator.free(args.relative_path);
-                    defer _ = shared.files_inflight.fetchSub(1, .acq_rel);
-                    defer _ = shared.files_scanned.fetchAdd(1, .acq_rel);
-                    defer if (shared.progress) |node| std.Progress.Node.completeOne(node);
+                    const previous = shared.completed.fetchAdd(1, .acq_rel);
+                    defer if (shared.progress) |node| node.setCompletedItems(previous + 1);
+
                     var worker_arena_state = std.heap.ArenaAllocator.init(shared.temp_allocator);
                     defer worker_arena_state.deinit();
                     const worker_allocator = worker_arena_state.allocator();
 
                     const timezone_offset = @as(i32, shared.filters.timezone_offset_minutes);
-                    var local_events = std.ArrayListUnmanaged(Model.TokenUsageEvent){};
+                    var local_events: std.ArrayList(Model.TokenUsageEvent) = .empty;
                     defer local_events.deinit(worker_allocator);
 
-                    const relative = args.relative_path;
+                    const relative = shared.paths[args.index];
+                    const absolute_path = std.fs.path.join(worker_allocator, &.{ shared.sessions_dir, relative }) catch {
+                        return;
+                    };
+                    defer worker_allocator.free(absolute_path);
+
                     if (relative.len <= JSON_EXT.len or !std.mem.endsWith(u8, relative, JSON_EXT)) return;
                     const session_id_slice = relative[0 .. relative.len - JSON_EXT.len];
 
@@ -233,7 +236,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                     parseSessionFile(
                         worker_allocator,
                         session_id,
-                        args.absolute_path,
+                        absolute_path,
                         shared.deduper,
                         timezone_offset,
                         &local_events,
@@ -273,57 +276,68 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             var walker = try root_dir.walk(shared_allocator);
             defer walker.deinit();
 
-            var files_scanned = std.atomic.Value(usize).init(0);
-            var files_inflight = std.atomic.Value(usize).init(0);
-            var deduper_storage: ?MessageDeduper = null;
-            defer if (deduper_storage) |*ded| ded.deinit();
-            if (STRATEGY == .claude) {
-                deduper_storage = try MessageDeduper.init(temp_allocator);
-            }
-            var shared = SharedContext{
-                .shared_allocator = shared_allocator,
-                .temp_allocator = temp_allocator,
-                .filters = filters,
-                .progress = progress,
-                .files_scanned = &files_scanned,
-                .files_inflight = &files_inflight,
-                .deduper = if (deduper_storage) |*ded| ded else null,
-                .consumer = consumer,
+            var relative_paths = std.ArrayList([]u8){
+                .items = &[_][]u8{},
+                .capacity = 0,
             };
-
-            var threaded = std.Io.Threaded.init(temp_allocator);
-            defer threaded.deinit();
-
-            const io = threaded.io();
-            var group = std.Io.Group.init;
+            defer {
+                for (relative_paths.items) |path| shared_allocator.free(path);
+                relative_paths.deinit(shared_allocator);
+            }
 
             while (try walker.next()) |entry| {
                 if (entry.kind != .file) continue;
                 const relative_path = std.mem.sliceTo(entry.path, 0);
                 if (!std.mem.endsWith(u8, relative_path, JSON_EXT)) continue;
+                const copy = try shared_allocator.dupe(u8, relative_path);
+                try relative_paths.append(shared_allocator, copy);
+            }
 
-                const relative_copy = try temp_allocator.dupe(u8, relative_path);
-                const absolute_path = try std.fs.path.join(temp_allocator, &.{ sessions_dir, relative_path });
-                _ = shared.files_inflight.fetchAdd(1, .acq_rel);
-                group.async(io, ProcessFn.run, .{ &shared, .{
-                    .absolute_path = absolute_path,
-                    .relative_path = relative_copy,
-                } });
-
+            if (relative_paths.items.len == 0) {
                 if (progress) |node| {
-                    const completed = shared.files_scanned.load(.acquire);
-                    const inflight = shared.files_inflight.load(.acquire);
-                    std.Progress.Node.setEstimatedTotalItems(node, completed + inflight);
-                    std.Progress.Node.setCompletedItems(node, completed);
+                    std.Progress.Node.setEstimatedTotalItems(node, 0);
+                    std.Progress.Node.setCompletedItems(node, 0);
                 }
+                std.log.info("{s}.collectEvents: scanned 0 files in {d:.2}ms", .{ provider_name, nsToMs(timer.read()) });
+                return;
+            }
+
+            var completed = std.atomic.Value(usize).init(0);
+            if (progress) |node| {
+                std.Progress.Node.setEstimatedTotalItems(node, relative_paths.items.len);
+                std.Progress.Node.setCompletedItems(node, 0);
+            }
+
+            var deduper_storage: ?MessageDeduper = null;
+            defer if (deduper_storage) |*ded| ded.deinit();
+            if (STRATEGY == .claude) {
+                deduper_storage = try MessageDeduper.init(temp_allocator);
+            }
+
+            var shared = SharedContext{
+                .shared_allocator = shared_allocator,
+                .temp_allocator = temp_allocator,
+                .filters = filters,
+                .progress = progress,
+                .sessions_dir = sessions_dir,
+                .paths = relative_paths.items,
+                .completed = &completed,
+                .deduper = if (deduper_storage) |*ded| ded else null,
+                .consumer = consumer,
+            };
+
+            var threaded: std.Io.Threaded = .init(temp_allocator);
+            defer threaded.deinit();
+
+            const io = threaded.io();
+            var group = std.Io.Group.init;
+
+            for (relative_paths.items, 0..) |_, idx| {
+                group.async(io, ProcessFn.run, .{ &shared, .{ .index = idx } });
             }
 
             group.wait(io);
-            const final_completed = shared.files_scanned.load(.acquire);
-            if (progress) |node| {
-                std.Progress.Node.setEstimatedTotalItems(node, final_completed);
-                std.Progress.Node.setCompletedItems(node, final_completed);
-            }
+            const final_completed = completed.load(.acquire);
 
             std.log.info(
                 "{s}.collectEvents: scanned {d} files in {d:.2}ms",
@@ -343,7 +357,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             file_path: []const u8,
             deduper: ?*MessageDeduper,
             timezone_offset_minutes: i32,
-            events: *std.ArrayListUnmanaged(Model.TokenUsageEvent),
+            events: *std.ArrayList(Model.TokenUsageEvent),
         ) !void {
             switch (STRATEGY) {
                 .codex => try parseCodexSessionFile(allocator, session_id, file_path, deduper, timezone_offset_minutes, events),
@@ -358,7 +372,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             file_path: []const u8,
             deduper: ?*MessageDeduper,
             timezone_offset_minutes: i32,
-            events: *std.ArrayListUnmanaged(Model.TokenUsageEvent),
+            events: *std.ArrayList(Model.TokenUsageEvent),
         ) !void {
             _ = deduper;
             var previous_totals: ?RawUsage = null;
@@ -382,7 +396,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             var scanner = std.json.Scanner.initStreaming(allocator);
             defer scanner.deinit();
 
-            var partial_line = std.ArrayListUnmanaged(u8){};
+            var partial_line: std.ArrayList(u8) = .empty;
             defer partial_line.deinit(allocator);
 
             var streamed_total: usize = 0;
@@ -438,7 +452,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             file_path: []const u8,
             deduper: ?*MessageDeduper,
             timezone_offset_minutes: i32,
-            events: *std.ArrayListUnmanaged(Model.TokenUsageEvent),
+            events: *std.ArrayList(Model.TokenUsageEvent),
         ) !void {
             _ = deduper;
             const max_session_size: usize = 32 * 1024 * 1024;
@@ -581,7 +595,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             file_path: []const u8,
             deduper: ?*MessageDeduper,
             timezone_offset_minutes: i32,
-            events: *std.ArrayListUnmanaged(Model.TokenUsageEvent),
+            events: *std.ArrayList(Model.TokenUsageEvent),
         ) !void {
             const max_session_size: usize = 128 * 1024 * 1024;
             const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
@@ -598,7 +612,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             var file_reader = file.readerStreaming(io, reader_buffer[0..]);
             var reader = &file_reader.interface;
 
-            var partial_line = std.ArrayListUnmanaged(u8){};
+            var partial_line: std.ArrayList(u8) = .empty;
             defer partial_line.deinit(allocator);
 
             var session_label = session_id;
@@ -668,7 +682,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             session_label: *[]const u8,
             session_label_overridden: *bool,
             timezone_offset_minutes: i32,
-            events: *std.ArrayListUnmanaged(Model.TokenUsageEvent),
+            events: *std.ArrayList(Model.TokenUsageEvent),
             current_model: *?[]const u8,
             current_model_is_fallback: *bool,
         ) !void {
@@ -719,7 +733,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             deduper: ?*MessageDeduper,
             session_label: []const u8,
             timezone_offset_minutes: i32,
-            events: *std.ArrayListUnmanaged(Model.TokenUsageEvent),
+            events: *std.ArrayList(Model.TokenUsageEvent),
             current_model: *?[]const u8,
             current_model_is_fallback: *bool,
         ) !void {
@@ -1187,7 +1201,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             scanner: *std.json.Scanner,
             session_id: []const u8,
             line: []const u8,
-            events: *std.ArrayListUnmanaged(Model.TokenUsageEvent),
+            events: *std.ArrayList(Model.TokenUsageEvent),
             previous_totals: *?RawUsage,
             current_model: *?[]const u8,
             current_model_is_fallback: *bool,
@@ -1652,10 +1666,10 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
 
         const CollectWriter = struct {
             base: std.Io.Writer,
-            list: *std.ArrayListUnmanaged(u8),
+            list: *std.ArrayList(u8),
             allocator: std.mem.Allocator,
 
-            fn init(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) CollectWriter {
+            fn init(list: *std.ArrayList(u8), allocator: std.mem.Allocator) CollectWriter {
                 return .{
                     .base = .{
                         .vtable = &.{
@@ -1716,7 +1730,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 .cached_counts_overlap_input = true,
             });
 
-            var events = std.ArrayListUnmanaged(Model.TokenUsageEvent){};
+            var events = std.ArrayList(Model.TokenUsageEvent){};
             defer events.deinit(worker_allocator);
 
             try CodexProvider.parseCodexSessionFile(
@@ -1739,7 +1753,6 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             try std.testing.expectEqual(@as(u64, 1200), event.display_input_tokens);
         }
 
-
         test "gemini parser converts message totals into usage deltas" {
             const allocator = std.testing.allocator;
             var arena_state = std.heap.ArenaAllocator.init(allocator);
@@ -1754,7 +1767,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 .cached_counts_overlap_input = false,
             });
 
-            var events = std.ArrayListUnmanaged(Model.TokenUsageEvent){};
+            var events: std.ArrayList(Model.TokenUsageEvent) = .empty;
             defer events.deinit(worker_allocator);
 
             try GeminiProvider.parseGeminiSessionFile(
@@ -1790,7 +1803,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 .strategy = .claude,
             });
 
-            var events = std.ArrayListUnmanaged(Model.TokenUsageEvent){};
+            var events: std.ArrayList(Model.TokenUsageEvent) = .empty;
             defer events.deinit(worker_allocator);
 
             try ClaudeProvider.parseClaudeSessionFile(
