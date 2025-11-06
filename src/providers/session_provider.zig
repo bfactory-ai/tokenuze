@@ -276,10 +276,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             var walker = try root_dir.walk(shared_allocator);
             defer walker.deinit();
 
-            var relative_paths = std.ArrayList([]u8){
-                .items = &[_][]u8{},
-                .capacity = 0,
-            };
+            var relative_paths: std.ArrayList([]u8) = .empty;
             defer {
                 for (relative_paths.items) |path| shared_allocator.free(path);
                 relative_paths.deinit(shared_allocator);
