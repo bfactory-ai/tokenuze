@@ -6,7 +6,7 @@ const c = @cImport({
     @cInclude("time.h");
 });
 
-pub const DEFAULT_TIMEZONE_OFFSET_MINUTES: i32 = 9 * 60;
+pub const DEFAULT_TIMEZONE_OFFSET_MINUTES: i32 = 0;
 
 pub const TimestampError = error{
     InvalidFormat,
