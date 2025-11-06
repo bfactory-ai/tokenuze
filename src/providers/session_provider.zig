@@ -1739,6 +1739,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             try std.testing.expectEqual(@as(u64, 1200), event.display_input_tokens);
         }
 
+
         test "gemini parser converts message totals into usage deltas" {
             const allocator = std.testing.allocator;
             var arena_state = std.heap.ArenaAllocator.init(allocator);

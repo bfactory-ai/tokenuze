@@ -150,6 +150,14 @@ pub fn formatTimezoneLabelAlloc(allocator: std.mem.Allocator, offset_minutes: i3
     return allocator.dupe(u8, label);
 }
 
+test "isoDateForTimezone adjusts across day boundaries" {
+    const positive = try isoDateForTimezone("2025-09-01T16:30:00Z", 9 * 60);
+    try std.testing.expectEqualStrings("2025-09-02", &positive);
+
+    const negative = try isoDateForTimezone("2025-09-01T04:00:00Z", -5 * 60);
+    try std.testing.expectEqualStrings("2025-08-31", &negative);
+}
+
 fn parseIso8601ToUtcSeconds(timestamp: []const u8) TimestampError!i64 {
     const split_index = std.mem.indexOfScalar(u8, timestamp, 'T') orelse return error.InvalidFormat;
     const date_part = timestamp[0..split_index];
