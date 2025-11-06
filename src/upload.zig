@@ -1,10 +1,7 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const machine_id = @import("machine_id.zig");
 const io_util = @import("io_util.zig");
-const c_time = @cImport({
-    @cInclude("time.h");
-});
+const timeutil = @import("time.zig");
 
 pub const ProviderUpload = struct {
     name: []const u8,
@@ -267,7 +264,7 @@ fn buildUploadPayload(
     machine: []const u8,
     providers: []const ProviderUpload,
 ) ![]u8 {
-    const timestamp = try currentTimestampIso8601(allocator);
+    const timestamp = try timeutil.currentTimestampIso8601(allocator);
     defer allocator.free(timestamp);
 
     const hostname = try resolveHostname(allocator);
@@ -279,7 +276,7 @@ fn buildUploadPayload(
     const display_name = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ username, hostname });
     defer allocator.free(display_name);
 
-    const timezone_label = try detectLocalTimezoneLabel(allocator);
+    const timezone_label = timeutil.detectLocalTimezoneLabel(allocator) catch try allocator.dupe(u8, "UTC+00:00");
     defer allocator.free(timezone_label);
 
     const payload = Payload{
@@ -429,98 +426,6 @@ fn resolveUsername(allocator: std.mem.Allocator) ![]u8 {
     }
 
     return allocator.dupe(u8, "unknown");
-}
-
-fn currentTimestampIso8601(allocator: std.mem.Allocator) ![]u8 {
-    const secs = currentUnixSeconds() catch return allocator.dupe(u8, "1970-01-01T00:00:00Z");
-    const epoch = std.time.epoch.EpochSeconds{ .secs = secs };
-    const epoch_day = epoch.getEpochDay();
-    const year_day = epoch_day.calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch.getDaySeconds();
-    return std.fmt.allocPrint(
-        allocator,
-        "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
-        .{
-            year_day.year,
-            month_day.month.numeric(),
-            @as(u8, month_day.day_index) + 1,
-            day_seconds.getHoursIntoDay(),
-            day_seconds.getMinutesIntoHour(),
-            day_seconds.getSecondsIntoMinute(),
-        },
-    );
-}
-
-fn detectLocalTimezoneLabel(allocator: std.mem.Allocator) ![]u8 {
-    const minutes = detectLocalTimezoneOffsetMinutes() catch return allocator.dupe(u8, "UTC+00:00");
-    const clamped = std.math.clamp(minutes, -12 * 60, 14 * 60);
-    const sign: u8 = if (clamped >= 0) '+' else '-';
-    const abs_minutes = @abs(clamped);
-    const hours = abs_minutes / 60;
-    const mins = abs_minutes % 60;
-    return std.fmt.allocPrint(allocator, "UTC{c}{d:0>2}:{d:0>2}", .{ sign, hours, mins });
-}
-
-fn detectLocalTimezoneOffsetMinutes() !i32 {
-    return switch (builtin.target.os.tag) {
-        .windows => detectWindowsTimezoneMinutes(),
-        .wasi => 0,
-        else => detectPosixTimezoneMinutes(),
-    };
-}
-
-fn detectPosixTimezoneMinutes() !i32 {
-    const now = try currentUnixSeconds();
-    const TimeT = c_time.time_t;
-    const casted = std.math.cast(TimeT, @as(i64, @intCast(now))) orelse return error.TimezoneUnavailable;
-    var t_value: TimeT = casted;
-
-    var local_tm: c_time.tm = undefined;
-    if (c_time.localtime_r(&t_value, &local_tm) == null) return error.TimezoneUnavailable;
-
-    if (@hasField(c_time.tm, "tm_gmtoff")) {
-        const off = @as(i64, @intCast(@field(local_tm, "tm_gmtoff")));
-        return @as(i32, @intCast(@divTrunc(off, 60)));
-    }
-    if (@hasField(c_time.tm, "__tm_gmtoff")) {
-        const off = @as(i64, @intCast(@field(local_tm, "__tm_gmtoff")));
-        return @as(i32, @intCast(@divTrunc(off, 60)));
-    }
-
-    var utc_tm: c_time.tm = undefined;
-    if (c_time.gmtime_r(&t_value, &utc_tm) == null) return error.TimezoneUnavailable;
-
-    const local_secs = tmToUnixSeconds(local_tm);
-    const utc_secs = tmToUnixSeconds(utc_tm);
-    const delta = local_secs - utc_secs;
-    return @as(i32, @intCast(@divTrunc(delta, 60)));
-}
-
-fn detectWindowsTimezoneMinutes() !i32 {
-    var offset_seconds: c_long = 0;
-    if (@hasDecl(c_time, "_get_timezone")) {
-        if (c_time._get_timezone(&offset_seconds) != 0) return error.TimezoneUnavailable;
-    } else if (@hasDecl(c_time, "_timezone")) {
-        offset_seconds = c_time._timezone;
-    } else {
-        return error.TimezoneUnavailable;
-    }
-    return -@as(i32, @intCast(offset_seconds / 60));
-}
-
-fn tmToUnixSeconds(tm_value: c_time.tm) i64 {
-    const year = @as(i32, tm_value.tm_year) + 1900;
-    const month = @as(u8, @intCast(tm_value.tm_mon + 1));
-    const day = @as(u8, @intCast(tm_value.tm_mday));
-    const hour = tm_value.tm_hour;
-    const minute = tm_value.tm_min;
-    const second = tm_value.tm_sec;
-    const day_count = daysFromCivil(year, month, day);
-    return day_count * 86400 +
-        @as(i64, hour) * 3600 +
-        @as(i64, minute) * 60 +
-        @as(i64, second);
 }
 
 fn daysFromCivil(year: i32, month_u8: u8, day_u8: u8) i64 {
