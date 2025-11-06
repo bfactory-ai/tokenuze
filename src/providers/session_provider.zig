@@ -1528,10 +1528,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                             const name_slice = try readStringValue(reader, &key_buffer);
                             const maybe_pricing = try self.parseEntry(reader, &scratch);
                             if (maybe_pricing) |entry| {
-                                if (self.pricing.get(name_slice) == null) {
-                                    const copied_name = try self.allocator.dupe(u8, name_slice);
-                                    try self.pricing.put(copied_name, entry);
-                                }
+                                try self.insertPricingEntries(name_slice, entry);
                             }
                             key_buffer.clearRetainingCapacity();
                         },
@@ -1589,6 +1586,24 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                     .cached_input_cost_per_m = cached * Model.MILLION,
                     .output_cost_per_m = output_rate.? * Model.MILLION,
                 };
+            }
+
+            fn insertPricingEntries(self: *PricingFeedParser, name: []const u8, entry: Model.ModelPricing) !void {
+                try self.putPricing(name, entry);
+
+                if (std.mem.lastIndexOfScalar(u8, name, '/')) |idx| {
+                    const alias = name[idx + 1 ..];
+                    if (alias.len != 0 and !std.mem.eql(u8, alias, name)) {
+                        try self.putPricing(alias, entry);
+                    }
+                }
+            }
+
+            fn putPricing(self: *PricingFeedParser, key: []const u8, entry: Model.ModelPricing) !void {
+                if (self.pricing.get(key) != null) return;
+                const copied_name = try self.allocator.dupe(u8, key);
+                errdefer self.allocator.free(copied_name);
+                try self.pricing.put(copied_name, entry);
             }
         };
 
@@ -1775,6 +1790,34 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             try std.testing.expectEqual(@as(u64, 250), event.usage.cached_input_tokens);
             try std.testing.expectEqual(@as(u64, 600), event.usage.output_tokens);
             try std.testing.expectEqual(@as(u64, 1500), event.display_input_tokens);
+        }
+
+        test "pricing parser stores alias for slash-separated model names" {
+            const allocator = std.testing.allocator;
+            const AliasProvider = Provider(.{
+                .name = "alias-test",
+                .sessions_dir_suffix = "/unused",
+            });
+
+            var pricing = Model.PricingMap.init(allocator);
+            defer Model.deinitPricingMap(&pricing, allocator);
+
+            var parser = AliasProvider.PricingFeedParser{
+                .allocator = allocator,
+                .temp_allocator = allocator,
+                .pricing = &pricing,
+            };
+
+            const pricing_entry = Model.ModelPricing{
+                .input_cost_per_m = 1,
+                .cache_creation_cost_per_m = 1,
+                .cached_input_cost_per_m = 1,
+                .output_cost_per_m = 1,
+            };
+            try parser.insertPricingEntries("gemini/gemini-flash-latest", pricing_entry);
+
+            try std.testing.expect(pricing.get("gemini/gemini-flash-latest") != null);
+            try std.testing.expect(pricing.get("gemini-flash-latest") != null);
         }
     };
 }
