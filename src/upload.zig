@@ -1,6 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const machine_id = @import("machine_id.zig");
 const io_util = @import("io_util.zig");
+const c_time = @cImport({
+    @cInclude("time.h");
+});
 
 pub const ProviderUpload = struct {
     name: []const u8,
@@ -275,13 +279,18 @@ fn buildUploadPayload(
     const display_name = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ username, hostname });
     defer allocator.free(display_name);
 
+    const timezone_label = try detectLocalTimezoneLabel(allocator);
+    defer allocator.free(timezone_label);
+
     const payload = Payload{
         .timestamp = timestamp,
         .machineId = machine,
         .hostname = hostname,
         .displayName = display_name,
+        .timezone = timezone_label,
         .providers = providers,
     };
+    std.log.info("Payload timestamp (UTC): {s} | timezone: {s}", .{ timestamp, timezone_label });
 
     var buffer = std.ArrayList(u8).empty;
     defer buffer.deinit(allocator);
@@ -333,6 +342,7 @@ const Payload = struct {
     machineId: []const u8,
     hostname: []const u8,
     displayName: []const u8,
+    timezone: []const u8,
     providers: []const ProviderUpload,
 
     pub fn jsonStringify(self: Payload, jw: anytype) !void {
@@ -345,6 +355,8 @@ const Payload = struct {
         try jw.write(self.hostname);
         try jw.objectField("displayName");
         try jw.write(self.displayName);
+        try jw.objectField("timezone");
+        try jw.write(self.timezone);
 
         for (self.providers) |provider| {
             try jw.objectField(provider.name);
@@ -438,6 +450,94 @@ fn currentTimestampIso8601(allocator: std.mem.Allocator) ![]u8 {
             day_seconds.getSecondsIntoMinute(),
         },
     );
+}
+
+fn detectLocalTimezoneLabel(allocator: std.mem.Allocator) ![]u8 {
+    const minutes = detectLocalTimezoneOffsetMinutes() catch return allocator.dupe(u8, "UTC+00:00");
+    const clamped = std.math.clamp(minutes, -12 * 60, 14 * 60);
+    const sign: u8 = if (clamped >= 0) '+' else '-';
+    const abs_minutes = @abs(clamped);
+    const hours = abs_minutes / 60;
+    const mins = abs_minutes % 60;
+    return std.fmt.allocPrint(allocator, "UTC{c}{d:0>2}:{d:0>2}", .{ sign, hours, mins });
+}
+
+fn detectLocalTimezoneOffsetMinutes() !i32 {
+    return switch (builtin.target.os.tag) {
+        .windows => detectWindowsTimezoneMinutes(),
+        .wasi => 0,
+        else => detectPosixTimezoneMinutes(),
+    };
+}
+
+fn detectPosixTimezoneMinutes() !i32 {
+    const now = try currentUnixSeconds();
+    const TimeT = c_time.time_t;
+    const casted = std.math.cast(TimeT, @as(i64, @intCast(now))) orelse return error.TimezoneUnavailable;
+    var t_value: TimeT = casted;
+
+    var local_tm: c_time.tm = undefined;
+    if (c_time.localtime_r(&t_value, &local_tm) == null) return error.TimezoneUnavailable;
+
+    if (@hasField(c_time.tm, "tm_gmtoff")) {
+        const off = @as(i64, @intCast(@field(local_tm, "tm_gmtoff")));
+        return @as(i32, @intCast(@divTrunc(off, 60)));
+    }
+    if (@hasField(c_time.tm, "__tm_gmtoff")) {
+        const off = @as(i64, @intCast(@field(local_tm, "__tm_gmtoff")));
+        return @as(i32, @intCast(@divTrunc(off, 60)));
+    }
+
+    var utc_tm: c_time.tm = undefined;
+    if (c_time.gmtime_r(&t_value, &utc_tm) == null) return error.TimezoneUnavailable;
+
+    const local_secs = tmToUnixSeconds(local_tm);
+    const utc_secs = tmToUnixSeconds(utc_tm);
+    const delta = local_secs - utc_secs;
+    return @as(i32, @intCast(@divTrunc(delta, 60)));
+}
+
+fn detectWindowsTimezoneMinutes() !i32 {
+    var offset_seconds: c_long = 0;
+    if (@hasDecl(c_time, "_get_timezone")) {
+        if (c_time._get_timezone(&offset_seconds) != 0) return error.TimezoneUnavailable;
+    } else if (@hasDecl(c_time, "_timezone")) {
+        offset_seconds = c_time._timezone;
+    } else {
+        return error.TimezoneUnavailable;
+    }
+    return -@as(i32, @intCast(offset_seconds / 60));
+}
+
+fn tmToUnixSeconds(tm_value: c_time.tm) i64 {
+    const year = @as(i32, tm_value.tm_year) + 1900;
+    const month = @as(u8, @intCast(tm_value.tm_mon + 1));
+    const day = @as(u8, @intCast(tm_value.tm_mday));
+    const hour = tm_value.tm_hour;
+    const minute = tm_value.tm_min;
+    const second = tm_value.tm_sec;
+    const day_count = daysFromCivil(year, month, day);
+    return day_count * 86400 +
+        @as(i64, hour) * 3600 +
+        @as(i64, minute) * 60 +
+        @as(i64, second);
+}
+
+fn daysFromCivil(year: i32, month_u8: u8, day_u8: u8) i64 {
+    const m = @as(i32, month_u8);
+    const d = @as(i32, day_u8);
+    var y = year;
+    var mm = m;
+    if (mm <= 2) {
+        y -= 1;
+        mm += 12;
+    }
+
+    const era = if (y >= 0) @divTrunc(y, 400) else -@divTrunc(-y, 400) - 1;
+    const yoe = y - era * 400;
+    const doy = @divTrunc(153 * (mm - 3) + 2, 5) + d - 1;
+    const doe = yoe * 365 + @divTrunc(yoe, 4) - @divTrunc(yoe, 100) + @divTrunc(yoe, 400) + doy;
+    return @as(i64, era) * 146097 + @as(i64, doe) - 719468;
 }
 
 fn currentUnixSeconds() !u64 {
