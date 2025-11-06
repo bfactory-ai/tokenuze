@@ -195,10 +195,6 @@ fn parseOptions(allocator: std.mem.Allocator) CliError!CliOptions {
         }
     }
 
-    const detected_offset = tokenuze.detectLocalTimezoneOffsetMinutes() catch 0;
-    const clamped = std.math.clamp(detected_offset, -12 * 60, 14 * 60);
-    options.filters.local_timezone_offset_minutes = @intCast(clamped);
-
     return options;
 }
 
