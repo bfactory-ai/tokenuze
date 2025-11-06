@@ -5,6 +5,8 @@ const io_util = @import("io_util.zig");
 pub const ProviderUpload = struct {
     name: []const u8,
     daily_summary: []const u8,
+    sessions_summary: []const u8,
+    weekly_summary: []const u8,
 };
 
 const DEFAULT_API_URL = "http://localhost:8000";
@@ -348,12 +350,14 @@ const Payload = struct {
             try jw.objectField(provider.name);
             try jw.beginObject();
             try jw.objectField("sessions");
-            try jw.write(RawJson{ .text = empty_sessions_json });
+            const trimmed_sessions = std.mem.trim(u8, provider.sessions_summary, " \n\r\t");
+            try jw.write(RawJson{ .text = trimmed_sessions });
             try jw.objectField("daily");
             const trimmed_daily = std.mem.trim(u8, provider.daily_summary, " \n\r\t");
             try jw.write(RawJson{ .text = trimmed_daily });
             try jw.objectField("weekly");
-            try jw.write(RawJson{ .text = empty_weekly_json });
+            const trimmed_weekly = std.mem.trim(u8, provider.weekly_summary, " \n\r\t");
+            try jw.write(RawJson{ .text = trimmed_weekly });
             try jw.endObject();
         }
 
