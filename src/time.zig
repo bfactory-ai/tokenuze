@@ -31,56 +31,59 @@ pub fn parseTimezoneOffsetMinutes(input: []const u8) ParseTimezoneError!i32 {
     const trimmed = std.mem.trim(u8, input, " \t\r\n");
     if (trimmed.len == 0) return error.InvalidFormat;
 
-    var idx: usize = 0;
-    if (trimmed.len >= 3 and std.ascii.eqlIgnoreCase(trimmed[0..3], "utc")) {
-        idx = 3;
-        while (idx < trimmed.len and std.ascii.isWhitespace(trimmed[idx])) : (idx += 1) {}
-        if (idx == trimmed.len) return 0;
+    var remaining = trimmed;
+    if (remaining.len >= 3 and std.ascii.eqlIgnoreCase(remaining[0..3], "utc")) {
+        remaining = remaining[3..];
+        remaining = std.mem.trimLeft(u8, remaining, " \t");
+        if (remaining.len == 0) return 0;
     }
 
-    if (idx >= trimmed.len) return error.InvalidFormat;
-
     var sign: i32 = 1;
-    switch (trimmed[idx]) {
-        '+' => idx += 1,
+    switch (remaining[0]) {
+        '+' => remaining = remaining[1..],
         '-' => {
             sign = -1;
-            idx += 1;
+            remaining = remaining[1..];
         },
         'Z', 'z' => {
-            if (idx + 1 != trimmed.len) return error.InvalidFormat;
+            if (remaining.len != 1) return error.InvalidFormat;
             return 0;
         },
         else => {},
     }
 
-    if (idx >= trimmed.len) return error.InvalidFormat;
+    if (remaining.len == 0) return error.InvalidFormat;
 
     var hours: i32 = 0;
-    var hour_digits: usize = 0;
-    while (idx < trimmed.len and std.ascii.isDigit(trimmed[idx])) : (idx += 1) {
-        hours = hours * 10 + (@as(i32, trimmed[idx]) - '0');
-        hour_digits += 1;
-        if (hour_digits > 2) return error.InvalidFormat;
-    }
-    if (hour_digits == 0) return error.InvalidFormat;
-
     var minutes: i32 = 0;
-    if (idx < trimmed.len) {
-        if (trimmed[idx] == ':') {
-            idx += 1;
-            if (idx + 2 > trimmed.len) return error.InvalidFormat;
-            minutes = std.fmt.parseInt(i32, trimmed[idx .. idx + 2], 10) catch return error.InvalidFormat;
-            idx += 2;
-        } else if (trimmed.len - idx == 2) {
-            minutes = std.fmt.parseInt(i32, trimmed[idx..], 10) catch return error.InvalidFormat;
-            idx = trimmed.len;
-        } else {
-            return error.InvalidFormat;
+
+    if (std.mem.indexOfScalar(u8, remaining, ':')) |colon_idx| {
+        const hours_part = remaining[0..colon_idx];
+        const minutes_part = remaining[colon_idx + 1 ..];
+        if (hours_part.len == 0 or hours_part.len > 2) return error.InvalidFormat;
+        if (minutes_part.len != 2) return error.InvalidFormat;
+        hours = std.fmt.parseInt(i32, hours_part, 10) catch return error.InvalidFormat;
+        minutes = std.fmt.parseInt(i32, minutes_part, 10) catch return error.InvalidFormat;
+    } else {
+        for (remaining) |c| {
+            if (!std.ascii.isDigit(c)) return error.InvalidFormat;
+        }
+        switch (remaining.len) {
+            1, 2 => {
+                hours = std.fmt.parseInt(i32, remaining, 10) catch return error.InvalidFormat;
+            },
+            3 => {
+                hours = std.fmt.parseInt(i32, remaining[0..1], 10) catch return error.InvalidFormat;
+                minutes = std.fmt.parseInt(i32, remaining[1..3], 10) catch return error.InvalidFormat;
+            },
+            4 => {
+                hours = std.fmt.parseInt(i32, remaining[0..2], 10) catch return error.InvalidFormat;
+                minutes = std.fmt.parseInt(i32, remaining[2..4], 10) catch return error.InvalidFormat;
+            },
+            else => return error.InvalidFormat,
         }
     }
 
-    if (idx != trimmed.len) return error.InvalidFormat;
     if (minutes >= 60) return error.InvalidFormat;
 
     const total_minutes = hours * 60 + minutes;
