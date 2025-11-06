@@ -486,7 +486,7 @@ pub const SessionRecorder = struct {
             if (self.last_activity) |timestamp| {
                 try jw.write(timestamp);
             } else {
-                try jw.write("");
+                try jw.write(null);
             }
             try jw.objectField("sessionFile");
             try jw.write(self.session_file);
