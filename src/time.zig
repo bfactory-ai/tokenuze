@@ -237,18 +237,21 @@ fn utcSecondsToOffsetIsoDate(utc_seconds: i64, offset_minutes: i32) TimestampErr
     const year_day = epoch_day.calculateYearDay();
     const month_day = year_day.calculateMonthDay();
 
+    const year = year_day.year;
+    if (year < 0 or year > 9999) return error.OutOfRange;
+
     var buffer: [10]u8 = undefined;
-    writeFourDigits(year_day.year, buffer[0..4]);
+    writeFourDigits(@intCast(year), buffer[0..4]);
     buffer[4] = '-';
-    writeTwoDigits(@as(u8, month_day.month.numeric()), buffer[5..7]);
+    writeTwoDigits(@intCast(month_day.month.numeric()), buffer[5..7]);
     buffer[7] = '-';
-    writeTwoDigits(@as(u8, month_day.day_index) + 1, buffer[8..10]);
+    writeTwoDigits(@intCast(month_day.day_index + 1), buffer[8..10]);
     return buffer;
 }
 
-fn daysFromCivil(year: i32, month_u8: u8, day_u8: u8) i64 {
-    const m = @as(i32, month_u8);
-    const d = @as(i32, day_u8);
+fn daysFromCivil(year: i32, month: u8, day: u8) i64 {
+    const m: i32 = month;
+    const d: i32 = day;
     var y = year;
     var mm = m;
     if (mm <= 2) {
