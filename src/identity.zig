@@ -46,8 +46,12 @@ pub fn getUsername(allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn hostnameBufferLen() usize {
-    return comptime blk: {
-        if (@TypeOf(std.posix.HOST_NAME_MAX) == void) break :blk 256;
-        break :blk std.posix.HOST_NAME_MAX;
-    };
+    if (builtin.target.os.tag == .windows) {
+        return 256;
+    } else {
+        return comptime blk: {
+            if (@TypeOf(std.posix.HOST_NAME_MAX) == void) break :blk 256;
+            break :blk std.posix.HOST_NAME_MAX;
+        };
+    }
 }
