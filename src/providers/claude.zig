@@ -95,39 +95,20 @@ const ClaudeLineHandler = struct {
     model_state: *ModelState,
 
     fn handle(self: *ClaudeLineHandler, line: []const u8, line_index: usize) !void {
-        try handleClaudeLine(
-            self.ctx,
-            self.allocator,
-            line,
-            line_index,
-            self.file_path,
-            self.deduper,
-            self.session_label,
-            self.session_label_overridden,
-            self.timezone_offset_minutes,
-            self.events,
-            self.model_state,
-        );
+        try handleClaudeLine(self, line, line_index);
     }
 };
 
 fn handleClaudeLine(
-    ctx: *const provider.ParseContext,
-    allocator: std.mem.Allocator,
+    handler: *ClaudeLineHandler,
     line: []const u8,
     line_index: usize,
-    file_path: []const u8,
-    deduper: ?*MessageDeduper,
-    session_label: *[]const u8,
-    session_label_overridden: *bool,
-    timezone_offset_minutes: i32,
-    events: *std.ArrayList(model.TokenUsageEvent),
-    model_state: *ModelState,
 ) !void {
-    var parsed_doc = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch |err| {
+    const ctx = handler.ctx;
+    var parsed_doc = std.json.parseFromSlice(std.json.Value, handler.allocator, line, .{}) catch |err| {
         std.log.warn(
             "{s}: failed to parse claude session file '{s}' line {d} ({s})",
-            .{ ctx.provider_name, file_path, line_index, @errorName(err) },
+            .{ ctx.provider_name, handler.file_path, line_index, @errorName(err) },
         );
         return;
     };
@@ -138,36 +119,12 @@ fn handleClaudeLine(
         else => return,
     };
 
-    provider.overrideSessionLabelFromValue(allocator, session_label, session_label_overridden, record.get("sessionId"));
-
-    try emitClaudeEvent(
-        ctx,
-        allocator,
-        record,
-        deduper,
-        session_label.*,
-        timezone_offset_minutes,
-        events,
-        model_state,
+    provider.overrideSessionLabelFromValue(
+        handler.allocator,
+        handler.session_label,
+        handler.session_label_overridden,
+        record.get("sessionId"),
     );
-}
-
-fn emitClaudeEvent(
-    ctx: *const provider.ParseContext,
-    allocator: std.mem.Allocator,
-    record: std.json.ObjectMap,
-    deduper: ?*MessageDeduper,
-    session_label: []const u8,
-    timezone_offset_minutes: i32,
-    events: *std.ArrayList(model.TokenUsageEvent),
-    model_state: *ModelState,
-) !void {
-    const type_value = record.get("type") orelse return;
-    const type_slice = switch (type_value) {
-        .string => |slice| slice,
-        else => return,
-    };
-    if (!std.mem.eql(u8, type_slice, "assistant")) return;
 
     const message_value = record.get("message") orelse return;
     const message_obj = switch (message_value) {
@@ -175,7 +132,23 @@ fn emitClaudeEvent(
         else => return,
     };
 
-    if (!try shouldEmitClaudeMessage(deduper, record, message_obj)) {
+    try emitClaudeEvent(handler, record, message_obj);
+}
+
+fn emitClaudeEvent(
+    handler: *ClaudeLineHandler,
+    record: std.json.ObjectMap,
+    message_obj: std.json.ObjectMap,
+) !void {
+    const ctx = handler.ctx;
+    const type_value = record.get("type") orelse return;
+    const type_slice = switch (type_value) {
+        .string => |slice| slice,
+        else => return,
+    };
+    if (!std.mem.eql(u8, type_slice, "assistant")) return;
+
+    if (!try shouldEmitClaudeMessage(handler.deduper, record, message_obj)) {
         return;
     }
 
@@ -185,12 +158,12 @@ fn emitClaudeEvent(
         else => return,
     };
 
-    const timestamp_info = try provider.timestampFromValue(allocator, timezone_offset_minutes, record.get("timestamp")) orelse return;
+    const timestamp_info = try provider.timestampFromValue(handler.allocator, handler.timezone_offset_minutes, record.get("timestamp")) orelse return;
     const owned_timestamp = timestamp_info.text;
     const iso_date = timestamp_info.local_iso_date;
 
     const message_model = message_obj.get("model");
-    const resolved_model = (try ctx.requireModel(allocator, model_state, message_model)) orelse return;
+    const resolved_model = (try ctx.requireModel(handler.allocator, handler.model_state, message_model)) orelse return;
 
     const raw = parseClaudeUsage(usage_obj);
     const usage = model.TokenUsage.fromRaw(raw);
@@ -199,7 +172,7 @@ fn emitClaudeEvent(
     }
 
     const event = model.TokenUsageEvent{
-        .session_id = session_label,
+        .session_id = handler.session_label.*,
         .timestamp = owned_timestamp,
         .local_iso_date = iso_date,
         .model = resolved_model.name,
@@ -207,7 +180,7 @@ fn emitClaudeEvent(
         .is_fallback = resolved_model.is_fallback,
         .display_input_tokens = ctx.computeDisplayInput(usage),
     };
-    try events.append(allocator, event);
+    try handler.events.append(handler.allocator, event);
 }
 
 fn shouldEmitClaudeMessage(
