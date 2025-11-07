@@ -47,7 +47,7 @@ const fallback_pricing = [_]SessionProvider.FallbackPricingEntry{
     } },
 };
 
-const Provider = SessionProvider.Provider(.{
+const ProviderExports = SessionProvider.makeProvider(.{
     .name = "codex",
     .sessions_dir_suffix = "/.codex/sessions",
     .legacy_fallback_model = "gpt-5",
@@ -56,10 +56,10 @@ const Provider = SessionProvider.Provider(.{
     .parse_session_fn = parseSessionFile,
 });
 
-pub const collect = Provider.collect;
-pub const streamEvents = Provider.streamEvents;
-pub const loadPricingData = Provider.loadPricingData;
-pub const EventConsumer = Provider.EventConsumer;
+pub const collect = ProviderExports.collect;
+pub const streamEvents = ProviderExports.streamEvents;
+pub const loadPricingData = ProviderExports.loadPricingData;
+pub const EventConsumer = ProviderExports.EventConsumer;
 
 fn parseSessionFile(
     allocator: std.mem.Allocator,

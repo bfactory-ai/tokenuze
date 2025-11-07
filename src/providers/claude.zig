@@ -7,7 +7,7 @@ const RawUsage = model.RawTokenUsage;
 const MessageDeduper = SessionProvider.MessageDeduper;
 const ModelState = SessionProvider.ModelState;
 
-const Provider = SessionProvider.Provider(.{
+const ProviderExports = SessionProvider.makeProvider(.{
     .name = "claude",
     .sessions_dir_suffix = "/.claude/projects",
     .legacy_fallback_model = null,
@@ -18,8 +18,8 @@ const Provider = SessionProvider.Provider(.{
     .requires_deduper = true,
 });
 
-pub const collect = Provider.collect;
-pub const loadPricingData = Provider.loadPricingData;
+pub const collect = ProviderExports.collect;
+pub const loadPricingData = ProviderExports.loadPricingData;
 
 fn parseSessionFile(
     allocator: std.mem.Allocator,

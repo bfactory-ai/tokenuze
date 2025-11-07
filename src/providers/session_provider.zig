@@ -264,6 +264,16 @@ pub const ProviderConfig = struct {
     requires_deduper: bool = false,
 };
 
+pub fn makeProvider(comptime cfg: ProviderConfig) type {
+    const ProviderType = Provider(cfg);
+    return struct {
+        pub const collect = ProviderType.collect;
+        pub const streamEvents = ProviderType.streamEvents;
+        pub const loadPricingData = ProviderType.loadPricingData;
+        pub const EventConsumer = ProviderType.EventConsumer;
+    };
+}
+
 var remote_pricing_loaded = std.atomic.Value(bool).init(false);
 
 pub const RemotePricingStats = struct {

@@ -33,7 +33,7 @@ const fallback_pricing = [_]SessionProvider.FallbackPricingEntry{
     } },
 };
 
-const Provider = SessionProvider.Provider(.{
+const ProviderExports = SessionProvider.makeProvider(.{
     .name = "gemini",
     .sessions_dir_suffix = "/.gemini/tmp",
     .legacy_fallback_model = null,
@@ -43,8 +43,8 @@ const Provider = SessionProvider.Provider(.{
     .parse_session_fn = parseSessionFile,
 });
 
-pub const collect = Provider.collect;
-pub const loadPricingData = Provider.loadPricingData;
+pub const collect = ProviderExports.collect;
+pub const loadPricingData = ProviderExports.loadPricingData;
 
 fn parseSessionFile(
     allocator: std.mem.Allocator,
