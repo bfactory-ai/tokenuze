@@ -147,8 +147,6 @@ fn emitClaudeEvent(
     };
 
     const timestamp_info = try provider.timestampFromValue(handler.allocator, handler.timezone_offset_minutes, record.get("timestamp")) orelse return;
-    const owned_timestamp = timestamp_info.text;
-    const iso_date = timestamp_info.local_iso_date;
 
     const message_model = message_obj.get("model");
     const resolved_model = (try ctx.requireModel(handler.allocator, handler.model_state, message_model)) orelse return;
@@ -161,8 +159,8 @@ fn emitClaudeEvent(
 
     const event = model.TokenUsageEvent{
         .session_id = handler.session_label.*,
-        .timestamp = owned_timestamp,
-        .local_iso_date = iso_date,
+        .timestamp = timestamp_info.text,
+        .local_iso_date = timestamp_info.local_iso_date,
         .model = resolved_model.name,
         .usage = usage,
         .is_fallback = resolved_model.is_fallback,

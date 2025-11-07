@@ -537,8 +537,6 @@ const CodexLineHandler = struct {
             return;
         };
         raw_timestamp.deinit(self.allocator);
-        const timestamp_copy = timestamp_info.text;
-        const iso_date = timestamp_info.local_iso_date;
 
         var delta_usage: ?model.TokenUsage = null;
         if (payload_result.last_usage) |last_usage| {
@@ -568,8 +566,8 @@ const CodexLineHandler = struct {
 
         const event = model.TokenUsageEvent{
             .session_id = self.session_id,
-            .timestamp = timestamp_copy,
-            .local_iso_date = iso_date,
+            .timestamp = timestamp_info.text,
+            .local_iso_date = timestamp_info.local_iso_date,
             .model = resolved.name,
             .usage = delta,
             .is_fallback = resolved.is_fallback,
