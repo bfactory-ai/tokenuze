@@ -121,7 +121,7 @@ const PricingFeedParser = struct {
                 },
                 .string => {
                     var name = try readReaderStringToken(self.temp_allocator, reader);
-                    defer name.release(self.temp_allocator);
+                    defer name.deinit(self.temp_allocator);
                     const maybe_pricing = try self.parseEntry(self.temp_allocator, reader);
                     if (maybe_pricing) |entry| {
                         try self.insertPricingEntries(name.slice, entry, &alias_buffer);
@@ -156,7 +156,7 @@ const PricingFeedParser = struct {
                 },
                 .string => {
                     var field = try readReaderStringToken(scratch_allocator, reader);
-                    defer field.release(scratch_allocator);
+                    defer field.deinit(scratch_allocator);
                     if (std.mem.eql(u8, field.slice, "input_cost_per_token")) {
                         input_rate = try readNumberValue(scratch_allocator, reader);
                     } else if (std.mem.eql(u8, field.slice, "output_cost_per_token")) {
@@ -235,18 +235,23 @@ const PricingFeedParser = struct {
     }
 };
 
-const BufferedSlice = struct {
+/// Lightweight wrapper for a slice returned by `std.json.Reader.nextAlloc`.
+/// Remembers whether the reader allocated backing storage (owned != null) so we
+/// can free only when necessary and avoid copying borrowed slices.
+const ReaderTokenSlice = struct {
+    /// View into the token’s bytes; for borrowed tokens this points into the reader buffer.
     slice: []const u8,
+    /// Non-null only when the reader allocated backing storage that we must free.
     owned: ?[]u8 = null,
 
-    fn release(self: *BufferedSlice, allocator: std.mem.Allocator) void {
+    fn deinit(self: *ReaderTokenSlice, allocator: std.mem.Allocator) void {
         if (self.owned) |buf| allocator.free(buf);
         self.slice = &.{};
         self.owned = null;
     }
 };
 
-fn readReaderStringToken(allocator: std.mem.Allocator, reader: *std.json.Reader) !BufferedSlice {
+fn readReaderStringToken(allocator: std.mem.Allocator, reader: *std.json.Reader) !ReaderTokenSlice {
     const token = try reader.nextAlloc(allocator, .alloc_if_needed);
     return switch (token) {
         .string => |slice| .{ .slice = slice },
@@ -255,7 +260,7 @@ fn readReaderStringToken(allocator: std.mem.Allocator, reader: *std.json.Reader)
     };
 }
 
-fn readReaderNumberSlice(allocator: std.mem.Allocator, reader: *std.json.Reader) !BufferedSlice {
+fn readReaderNumberSlice(allocator: std.mem.Allocator, reader: *std.json.Reader) !ReaderTokenSlice {
     const token = try reader.nextAlloc(allocator, .alloc_if_needed);
     return switch (token) {
         .number => |slice| .{ .slice = slice },
@@ -266,7 +271,7 @@ fn readReaderNumberSlice(allocator: std.mem.Allocator, reader: *std.json.Reader)
 
 fn readNumberValue(allocator: std.mem.Allocator, reader: *std.json.Reader) !f64 {
     var buffered = try readReaderNumberSlice(allocator, reader);
-    defer buffered.release(allocator);
+    defer buffered.deinit(allocator);
     return std.fmt.parseFloat(f64, buffered.slice) catch return error.InvalidNumber;
 }
 
