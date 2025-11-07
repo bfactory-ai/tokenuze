@@ -80,6 +80,7 @@ fn parseCodexSessionFile(
         .ctx = ctx,
         .allocator = allocator,
         .scanner = &scanner,
+        .file_path = file_path,
         .session_id = session_id,
         .events = events,
         .previous_totals = &previous_totals,
@@ -420,6 +421,7 @@ const CodexLineHandler = struct {
     ctx: *const provider.ParseContext,
     allocator: std.mem.Allocator,
     scanner: *std.json.Scanner,
+    file_path: []const u8,
     session_id: []const u8,
     events: *std.ArrayList(model.TokenUsageEvent),
     previous_totals: *?RawUsage,
@@ -491,7 +493,10 @@ const CodexLineHandler = struct {
             if (payload_result.model) |token| {
                 var model_token = token;
                 payload_result.model = null;
-                _ = self.ctx.captureModel(self.allocator, self.model_state, model_token) catch false;
+                _ = self.ctx.captureModel(self.allocator, self.model_state, model_token) catch |err| {
+                    self.ctx.logWarning(self.file_path, "failed to capture model", err);
+                    return;
+                };
                 model_token.release(self.allocator);
             }
             return;

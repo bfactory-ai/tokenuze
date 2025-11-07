@@ -111,7 +111,10 @@ fn parseGeminiSessionFile(
                 const iso_date = timestamp_info.local_iso_date;
 
                 const message_model = msg_obj.get("model");
-                _ = ctx.captureModel(allocator, &model_state, message_model) catch false;
+                _ = ctx.captureModel(allocator, &model_state, message_model) catch |err| {
+                    ctx.logWarning(file_path, "failed to capture model", err);
+                    return;
+                };
 
                 const current_raw = parseGeminiUsage(tokens_obj);
                 var delta = model.TokenUsage.deltaFrom(current_raw, previous_totals);
