@@ -860,7 +860,8 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                         shared.deduper,
                         timezone_offset,
                         &local_events,
-                    ) catch {
+                    ) catch |err| {
+                        logSessionWarning(absolute_path, "failed to parse session file", err);
                         return;
                     };
 
