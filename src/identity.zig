@@ -2,18 +2,14 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 pub fn getHostname(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "HOSTNAME")) |hostname| {
-        return hostname;
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
-    }
-
-    if (std.process.getEnvVarOwned(allocator, "COMPUTERNAME")) |computer_name| {
-        return computer_name;
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
+    const host_vars = [_][]const u8{ "HOSTNAME", "COMPUTERNAME" };
+    for (host_vars) |var_name| {
+        if (std.process.getEnvVarOwned(allocator, var_name)) |hostname| {
+            return hostname;
+        } else |err| switch (err) {
+            error.EnvironmentVariableNotFound => continue,
+            else => return err,
+        }
     }
 
     if (builtin.target.os.tag == .windows) {
@@ -28,18 +24,14 @@ pub fn getHostname(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn getUsername(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "USER")) |user| {
-        return user;
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
-    }
-
-    if (std.process.getEnvVarOwned(allocator, "USERNAME")) |windows_user| {
-        return windows_user;
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
+    const user_vars = [_][]const u8{ "USER", "USERNAME" };
+    for (user_vars) |var_name| {
+        if (std.process.getEnvVarOwned(allocator, var_name)) |username| {
+            return username;
+        } else |err| switch (err) {
+            error.EnvironmentVariableNotFound => continue,
+            else => return err,
+        }
     }
 
     return allocator.dupe(u8, "unknown");
