@@ -55,7 +55,7 @@ pub const ParseContext = struct {
         raw_model: anytype,
     ) !?ResolvedModel {
         _ = try self.captureModel(allocator, state, raw_model);
-        return resolveModel(&self, state, null);
+        return resolveModel(&self, state);
     }
 };
 
@@ -189,14 +189,7 @@ pub const ResolvedModel = struct {
 pub fn resolveModel(
     ctx: *const ParseContext,
     state: *ModelState,
-    extracted_model: ?[]const u8,
 ) ?ResolvedModel {
-    if (extracted_model) |model| {
-        state.current = model;
-        state.is_fallback = false;
-        return .{ .name = model, .is_fallback = false };
-    }
-
     if (state.current) |model| {
         return .{ .name = model, .is_fallback = state.is_fallback };
     }
