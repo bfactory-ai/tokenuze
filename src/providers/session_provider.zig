@@ -124,7 +124,7 @@ const PricingFeedParser = struct {
                     defer name.deinit(self.temp_allocator);
                     const maybe_pricing = try self.parseEntry(self.temp_allocator, reader);
                     if (maybe_pricing) |entry| {
-                        try self.insertPricingEntries(name.slice, entry, &alias_buffer);
+                        try self.insertPricingEntries(name.view(), entry, &alias_buffer);
                     }
                 },
                 else => return error.InvalidResponse,
@@ -157,13 +157,13 @@ const PricingFeedParser = struct {
                 .string => {
                     var field = try readReaderStringToken(scratch_allocator, reader);
                     defer field.deinit(scratch_allocator);
-                    if (std.mem.eql(u8, field.slice, "input_cost_per_token")) {
+                    if (std.mem.eql(u8, field.view(), "input_cost_per_token")) {
                         input_rate = try readNumberValue(scratch_allocator, reader);
-                    } else if (std.mem.eql(u8, field.slice, "output_cost_per_token")) {
+                    } else if (std.mem.eql(u8, field.view(), "output_cost_per_token")) {
                         output_rate = try readNumberValue(scratch_allocator, reader);
-                    } else if (std.mem.eql(u8, field.slice, "cache_creation_input_token_cost")) {
+                    } else if (std.mem.eql(u8, field.view(), "cache_creation_input_token_cost")) {
                         cache_creation_rate = try readNumberValue(scratch_allocator, reader);
-                    } else if (std.mem.eql(u8, field.slice, "cache_read_input_token_cost")) {
+                    } else if (std.mem.eql(u8, field.view(), "cache_read_input_token_cost")) {
                         cached_rate = try readNumberValue(scratch_allocator, reader);
                     } else {
                         try reader.skipValue();
@@ -235,27 +235,32 @@ const PricingFeedParser = struct {
     }
 };
 
-/// Lightweight wrapper for a slice returned by `std.json.Reader.nextAlloc`.
-/// Remembers whether the reader allocated backing storage (owned != null) so we
-/// can free only when necessary and avoid copying borrowed slices.
-const ReaderTokenSlice = struct {
-    /// View into the token’s bytes; for borrowed tokens this points into the reader buffer.
-    slice: []const u8,
-    /// Non-null only when the reader allocated backing storage that we must free.
-    owned: ?[]u8 = null,
+/// Token returned by `std.json.Reader.nextAlloc`, remembering whether storage
+/// was borrowed from the reader buffer or newly allocated.
+const ReaderTokenSlice = union(enum) {
+    borrowed: []const u8,
+    owned: []u8,
+
+    fn view(self: ReaderTokenSlice) []const u8 {
+        return switch (self) {
+            .borrowed, .owned => |val| val,
+        };
+    }
 
     fn deinit(self: *ReaderTokenSlice, allocator: std.mem.Allocator) void {
-        if (self.owned) |buf| allocator.free(buf);
-        self.slice = &.{};
-        self.owned = null;
+        switch (self.*) {
+            .borrowed => {},
+            .owned => |buf| allocator.free(buf),
+        }
+        self.* = ReaderTokenSlice{ .borrowed = &.{} };
     }
 };
 
 fn readReaderStringToken(allocator: std.mem.Allocator, reader: *std.json.Reader) !ReaderTokenSlice {
     const token = try reader.nextAlloc(allocator, .alloc_if_needed);
     return switch (token) {
-        .string => |slice| .{ .slice = slice },
-        .allocated_string => |buf| .{ .slice = buf, .owned = buf },
+        .string => |slice| .{ .borrowed = slice },
+        .allocated_string => |buf| .{ .owned = buf },
         else => error.UnexpectedToken,
     };
 }
@@ -263,8 +268,8 @@ fn readReaderStringToken(allocator: std.mem.Allocator, reader: *std.json.Reader)
 fn readReaderNumberSlice(allocator: std.mem.Allocator, reader: *std.json.Reader) !ReaderTokenSlice {
     const token = try reader.nextAlloc(allocator, .alloc_if_needed);
     return switch (token) {
-        .number => |slice| .{ .slice = slice },
-        .allocated_number => |buf| .{ .slice = buf, .owned = buf },
+        .number => |slice| .{ .borrowed = slice },
+        .allocated_number => |buf| .{ .owned = buf },
         else => error.UnexpectedToken,
     };
 }
@@ -272,7 +277,7 @@ fn readReaderNumberSlice(allocator: std.mem.Allocator, reader: *std.json.Reader)
 fn readNumberValue(allocator: std.mem.Allocator, reader: *std.json.Reader) !f64 {
     var buffered = try readReaderNumberSlice(allocator, reader);
     defer buffered.deinit(allocator);
-    return std.fmt.parseFloat(f64, buffered.slice) catch return error.InvalidNumber;
+    return std.fmt.parseFloat(f64, buffered.view()) catch return error.InvalidNumber;
 }
 
 pub fn Provider(comptime cfg: ProviderConfig) type {
