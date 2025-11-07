@@ -107,8 +107,6 @@ fn parseGeminiSessionFile(
                 };
 
                 const timestamp_info = try provider.timestampFromValue(allocator, timezone_offset_minutes, msg_obj.get("timestamp")) orelse continue;
-                const timestamp_copy = timestamp_info.text;
-                const iso_date = timestamp_info.local_iso_date;
 
                 const message_model = msg_obj.get("model");
                 _ = ctx.captureModel(allocator, &model_state, message_model) catch |err| {
@@ -129,8 +127,8 @@ fn parseGeminiSessionFile(
 
                 const event = model.TokenUsageEvent{
                     .session_id = session_label,
-                    .timestamp = timestamp_copy,
-                    .local_iso_date = iso_date,
+                    .timestamp = timestamp_info.text,
+                    .local_iso_date = timestamp_info.local_iso_date,
                     .model = resolved_model.name,
                     .usage = delta,
                     .is_fallback = resolved_model.is_fallback,
