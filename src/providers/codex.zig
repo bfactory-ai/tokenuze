@@ -374,10 +374,7 @@ fn parseModelValue(
                 try parseModelValue(allocator, scanner, storage);
             }
         },
-        .string => {
-            var value = try readStringToken(scanner, allocator);
-            value.release(allocator);
-        },
+        .string => try scanner.skipValue(),
         .null => {
             _ = try scanner.next();
         },
