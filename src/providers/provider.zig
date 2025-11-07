@@ -230,7 +230,7 @@ pub fn timestampFromSlice(
 ) !?TimestampInfo {
     const duplicate = try duplicateNonEmpty(allocator, slice) orelse return null;
     const iso_date = timeutil.isoDateForTimezone(duplicate, timezone_offset_minutes) catch {
-        allocator.free(@constCast(duplicate));
+        allocator.free(duplicate);
         return null;
     };
     return .{ .text = duplicate, .local_iso_date = iso_date };
