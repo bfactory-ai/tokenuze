@@ -58,9 +58,23 @@ pub fn build(b: *std.Build) void {
     });
     const unit_tests = b.addTest(.{ .root_module = test_module });
     unit_tests.root_module.link_libc = true;
+
+    const cli_test_module = b.createModule(.{
+        .root_source_file = b.path("src/cli.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "tokenuze", .module = mod },
+        },
+    });
+    const cli_tests = b.addTest(.{ .root_module = cli_test_module });
+    cli_tests.root_module.link_libc = true;
+
     const test_step = b.step("test", "Run unit tests");
     const test_cmd = b.addRunArtifact(unit_tests);
+    const cli_test_cmd = b.addRunArtifact(cli_tests);
     test_step.dependOn(&test_cmd.step);
+    test_step.dependOn(&cli_test_cmd.step);
 }
 
 fn resolveVersion(b: *std.Build) std.SemanticVersion {
