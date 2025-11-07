@@ -70,10 +70,7 @@ fn parseOptionsIterator(args: anytype) CliError!CliOptions {
     var agents_specified = false;
     var machine_id_only = false;
     while (args.next()) |arg| {
-        const maybe_spec = classifyArg(arg) catch |err| switch (err) {
-            CliError.InvalidUsage => return err,
-            else => return err,
-        };
+        const maybe_spec = try classifyArg(arg);
 
         if (maybe_spec) |spec| {
             switch (spec.id) {
@@ -198,16 +195,16 @@ fn classifyArg(arg: []const u8) CliError!?*const OptionSpec {
 }
 
 fn findLongOption(name: []const u8) ?*const OptionSpec {
-    for (option_specs, 0..) |spec, idx| {
-        if (std.mem.eql(u8, spec.long_name, name)) return &option_specs[idx];
+    for (&option_specs) |*spec| {
+        if (std.mem.eql(u8, spec.long_name, name)) return spec;
     }
     return null;
 }
 
 fn findShortOption(short: u8) ?*const OptionSpec {
-    for (option_specs, 0..) |spec, idx| {
+    for (&option_specs) |*spec| {
         if (spec.short_name) |alias| {
-            if (alias == short) return &option_specs[idx];
+            if (alias == short) return spec;
         }
     }
     return null;
