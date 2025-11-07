@@ -4,6 +4,7 @@ const timeutil = @import("../time.zig");
 const SessionProvider = @import("session_provider.zig");
 
 const RawUsage = Model.RawTokenUsage;
+const ModelState = SessionProvider.ModelState;
 
 const fallback_pricing = [_]SessionProvider.FallbackPricingEntry{
     .{ .name = "gemini-2.5-pro", .pricing = .{
@@ -105,8 +106,7 @@ fn parseGeminiSessionFile(
     if (messages.len == 0) return;
 
     var previous_totals: ?RawUsage = null;
-    var current_model: ?[]const u8 = null;
-    var current_model_is_fallback = false;
+    var model_state = ModelState{};
 
     for (messages) |message_value| {
         switch (message_value) {
@@ -131,8 +131,8 @@ fn parseGeminiSessionFile(
                     switch (model_value) {
                         .string => |slice| {
                             if (try SessionProvider.duplicateNonEmpty(allocator, slice)) |model_copy| {
-                                current_model = model_copy;
-                                current_model_is_fallback = false;
+                                model_state.current = model_copy;
+                                model_state.is_fallback = false;
                             }
                         },
                         else => {},
@@ -148,26 +148,15 @@ fn parseGeminiSessionFile(
                     continue;
                 }
 
-                var model_name = current_model;
-                var is_fallback = current_model_is_fallback;
-                if (model_name == null) {
-                    if (ctx.legacy_fallback_model) |legacy| {
-                        model_name = legacy;
-                        is_fallback = true;
-                        current_model = model_name;
-                        current_model_is_fallback = true;
-                    } else {
-                        continue;
-                    }
-                }
+                const resolved_model = SessionProvider.resolveModel(ctx, &model_state, null) orelse continue;
 
                 const event = Model.TokenUsageEvent{
                     .session_id = session_label,
                     .timestamp = timestamp_copy,
                     .local_iso_date = iso_date,
-                    .model = model_name.?,
+                    .model = resolved_model.name,
                     .usage = delta,
-                    .is_fallback = is_fallback,
+                    .is_fallback = resolved_model.is_fallback,
                     .display_input_tokens = ctx.computeDisplayInput(delta),
                 };
                 try events.append(allocator, event);
@@ -179,24 +168,11 @@ fn parseGeminiSessionFile(
 
 fn parseGeminiUsage(tokens_obj: std.json.ObjectMap) RawUsage {
     return .{
-        .input_tokens = jsonValueToU64(tokens_obj.get("input")),
-        .cached_input_tokens = jsonValueToU64(tokens_obj.get("cached")),
-        .output_tokens = jsonValueToU64(tokens_obj.get("output")) + jsonValueToU64(tokens_obj.get("tool")),
-        .reasoning_output_tokens = jsonValueToU64(tokens_obj.get("thoughts")),
-        .total_tokens = jsonValueToU64(tokens_obj.get("total")),
-    };
-}
-
-fn jsonValueToU64(maybe_value: ?std.json.Value) u64 {
-    const value = maybe_value orelse return 0;
-    return switch (value) {
-        .integer => |val| if (val >= 0) @as(u64, @intCast(val)) else 0,
-        .float => |val| if (val >= 0)
-            std.math.lossyCast(u64, @floor(val))
-        else
-            0,
-        .number_string => |slice| Model.parseTokenNumber(slice),
-        else => 0,
+        .input_tokens = SessionProvider.jsonValueToU64(tokens_obj.get("input")),
+        .cached_input_tokens = SessionProvider.jsonValueToU64(tokens_obj.get("cached")),
+        .output_tokens = SessionProvider.jsonValueToU64(tokens_obj.get("output")) + SessionProvider.jsonValueToU64(tokens_obj.get("tool")),
+        .reasoning_output_tokens = SessionProvider.jsonValueToU64(tokens_obj.get("thoughts")),
+        .total_tokens = SessionProvider.jsonValueToU64(tokens_obj.get("total")),
     };
 }
 

@@ -5,7 +5,7 @@ const SessionProvider = @import("session_provider.zig");
 
 const RawUsage = Model.RawTokenUsage;
 const TokenString = Model.TokenBuffer;
-const CollectWriter = SessionProvider.CollectWriter;
+const ModelState = SessionProvider.ModelState;
 
 const PayloadResult = struct {
     payload_type: ?Model.TokenBuffer = null,
@@ -83,75 +83,35 @@ fn parseCodexSessionFile(
     events: *std.ArrayList(Model.TokenUsageEvent),
 ) !void {
     var previous_totals: ?RawUsage = null;
-    var current_model: ?[]const u8 = null;
-    var current_model_is_fallback = false;
-    const max_session_size: usize = 128 * 1024 * 1024;
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        ctx.logWarning(file_path, "unable to open session file", err);
-        return;
-    };
-    defer file.close();
-
-    var io_single = std.Io.Threaded.init_single_threaded;
-    defer io_single.deinit();
-    const io = io_single.io();
-
-    var reader_buffer: [64 * 1024]u8 = undefined;
-    var file_reader = file.readerStreaming(io, reader_buffer[0..]);
-    var reader = &file_reader.interface;
+    var model_state = ModelState{};
 
     var scanner = std.json.Scanner.initStreaming(allocator);
     defer scanner.deinit();
 
-    var partial_line: std.ArrayList(u8) = .empty;
-    defer partial_line.deinit(allocator);
+    var handler = CodexLineHandler{
+        .ctx = ctx,
+        .allocator = allocator,
+        .scanner = &scanner,
+        .session_id = session_id,
+        .events = events,
+        .previous_totals = &previous_totals,
+        .model_state = &model_state,
+        .timezone_offset_minutes = timezone_offset_minutes,
+    };
 
-    var streamed_total: usize = 0;
-
-    while (true) {
-        partial_line.clearRetainingCapacity();
-        var writer_ctx = CollectWriter.init(&partial_line, allocator);
-        const streamed = reader.streamDelimiterEnding(&writer_ctx.base, '\n') catch |err| {
-            ctx.logWarning(file_path, "error while reading session stream", err);
-            return;
-        };
-
-        var newline_consumed = true;
-        const discard_result = reader.discardDelimiterInclusive('\n') catch |err| switch (err) {
-            error.EndOfStream => blk: {
-                newline_consumed = false;
-                break :blk 0;
-            },
-            else => {
-                ctx.logWarning(file_path, "error while advancing session stream", err);
-                return;
-            },
-        };
-
-        if (streamed == 0 and partial_line.items.len == 0 and !newline_consumed) {
-            break;
-        }
-
-        streamed_total += streamed;
-        if (streamed_total > max_session_size) return;
-
-        try processSessionLine(
-            ctx,
-            allocator,
-            &scanner,
-            session_id,
-            partial_line.items,
-            events,
-            &previous_totals,
-            &current_model,
-            &current_model_is_fallback,
-            timezone_offset_minutes,
-        );
-
-        if (!newline_consumed) break;
-        streamed_total += discard_result;
-        if (streamed_total > max_session_size) return;
-    }
+    try SessionProvider.streamJsonLines(
+        allocator,
+        ctx,
+        file_path,
+        .{
+            .max_bytes = 128 * 1024 * 1024,
+            .open_error_message = "unable to open session file",
+            .read_error_message = "error while reading session stream",
+            .advance_error_message = "error while advancing session stream",
+        },
+        &handler,
+        CodexLineHandler.handle,
+    );
 }
 
 fn parseObjectField(
@@ -468,6 +428,31 @@ fn resetScanner(scanner: *std.json.Scanner, input: []const u8) void {
     scanner.diagnostics = null;
 }
 
+const CodexLineHandler = struct {
+    ctx: *const SessionProvider.ParseContext,
+    allocator: std.mem.Allocator,
+    scanner: *std.json.Scanner,
+    session_id: []const u8,
+    events: *std.ArrayList(Model.TokenUsageEvent),
+    previous_totals: *?RawUsage,
+    model_state: *ModelState,
+    timezone_offset_minutes: i32,
+
+    fn handle(self: *CodexLineHandler, line: []const u8, _: usize) !void {
+        try processSessionLine(
+            self.ctx,
+            self.allocator,
+            self.scanner,
+            self.session_id,
+            line,
+            self.events,
+            self.previous_totals,
+            self.model_state,
+            self.timezone_offset_minutes,
+        );
+    }
+};
+
 fn processSessionLine(
     ctx: *const SessionProvider.ParseContext,
     allocator: std.mem.Allocator,
@@ -476,8 +461,7 @@ fn processSessionLine(
     line: []const u8,
     events: *std.ArrayList(Model.TokenUsageEvent),
     previous_totals: *?RawUsage,
-    current_model: *?[]const u8,
-    current_model_is_fallback: *bool,
+    model_state: *ModelState,
     timezone_offset_minutes: i32,
 ) !void {
     const trimmed = std.mem.trim(u8, line, " \t\r\n");
@@ -555,8 +539,8 @@ fn processSessionLine(
             if (model_token.slice.len != 0) {
                 const duplicated = SessionProvider.duplicateNonEmpty(allocator, model_token.slice) catch null;
                 if (duplicated) |model_copy| {
-                    current_model.* = model_copy;
-                    current_model_is_fallback.* = false;
+                    model_state.current = model_copy;
+                    model_state.is_fallback = false;
                 }
             }
             model_token.release(allocator);
@@ -607,45 +591,19 @@ fn processSessionLine(
         payload_result.model = null;
         if (model_token.slice.len != 0) {
             extracted_model = try SessionProvider.duplicateNonEmpty(allocator, model_token.slice);
-            if (extracted_model == null) extracted_model = current_model.*;
         }
         model_token.release(allocator);
     }
 
-    var model_name = extracted_model;
-    var is_fallback = false;
-    if (model_name == null) {
-        if (current_model.*) |known| {
-            model_name = known;
-            is_fallback = current_model_is_fallback.*;
-        } else if (ctx.legacy_fallback_model) |legacy| {
-            model_name = legacy;
-            is_fallback = true;
-            current_model.* = model_name;
-            current_model_is_fallback.* = true;
-        }
-    } else {
-        current_model.* = model_name;
-        current_model_is_fallback.* = false;
-    }
-
-    if (ctx.legacy_fallback_model == null and model_name == null) {
-        return;
-    }
-    if (ctx.legacy_fallback_model) |legacy| {
-        if (std.mem.eql(u8, model_name.?, legacy) and extracted_model == null) {
-            is_fallback = true;
-            current_model_is_fallback.* = true;
-        }
-    }
+    const resolved = SessionProvider.resolveModel(ctx, model_state, extracted_model) orelse return;
 
     const event = Model.TokenUsageEvent{
         .session_id = session_id,
         .timestamp = timestamp_copy,
         .local_iso_date = iso_date,
-        .model = model_name.?,
+        .model = resolved.name,
         .usage = delta,
-        .is_fallback = is_fallback,
+        .is_fallback = resolved.is_fallback,
         .display_input_tokens = ctx.computeDisplayInput(delta),
     };
     try events.append(allocator, event);

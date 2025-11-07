@@ -111,6 +111,138 @@ pub fn duplicateNonEmpty(arena: std.mem.Allocator, value: []const u8) !?[]const 
     return try arena.dupe(u8, trimmed);
 }
 
+pub const ModelState = struct {
+    current: ?[]const u8 = null,
+    is_fallback: bool = false,
+};
+
+pub const ResolvedModel = struct {
+    name: []const u8,
+    is_fallback: bool,
+};
+
+pub fn resolveModel(
+    ctx: *const ParseContext,
+    state: *ModelState,
+    extracted_model: ?[]const u8,
+) ?ResolvedModel {
+    if (extracted_model) |model| {
+        state.current = model;
+        state.is_fallback = false;
+        return .{ .name = model, .is_fallback = false };
+    }
+
+    if (state.current) |model| {
+        return .{ .name = model, .is_fallback = state.is_fallback };
+    }
+
+    if (ctx.legacy_fallback_model) |legacy| {
+        state.current = legacy;
+        state.is_fallback = true;
+        return .{ .name = legacy, .is_fallback = true };
+    }
+
+    return null;
+}
+
+pub fn jsonValueToU64(maybe_value: ?std.json.Value) u64 {
+    const value = maybe_value orelse return 0;
+    return switch (value) {
+        .integer => |val| if (val >= 0) @as(u64, @intCast(val)) else 0,
+        .float => |val| if (val >= 0)
+            std.math.lossyCast(u64, @floor(val))
+        else
+            0,
+        .number_string => |slice| Model.parseTokenNumber(slice),
+        else => 0,
+    };
+}
+
+pub const JsonlStreamOptions = struct {
+    max_bytes: usize = 128 * 1024 * 1024,
+    delimiter: u8 = '\n',
+    trim_lines: bool = true,
+    skip_empty: bool = true,
+    open_error_message: []const u8 = "unable to open session file",
+    read_error_message: []const u8 = "error while reading session stream",
+    advance_error_message: []const u8 = "error while advancing session stream",
+};
+
+pub fn streamJsonLines(
+    allocator: std.mem.Allocator,
+    ctx: *const ParseContext,
+    file_path: []const u8,
+    options: JsonlStreamOptions,
+    handler_context: anytype,
+    comptime handler: fn (@TypeOf(handler_context), []const u8, usize) anyerror!void,
+) !void {
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        ctx.logWarning(file_path, options.open_error_message, err);
+        return;
+    };
+    defer file.close();
+
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const io = io_single.io();
+
+    var reader_buffer: [64 * 1024]u8 = undefined;
+    var file_reader = file.readerStreaming(io, reader_buffer[0..]);
+    var reader = &file_reader.interface;
+
+    var partial_line: std.ArrayList(u8) = .empty;
+    defer partial_line.deinit(allocator);
+
+    var streamed_total: usize = 0;
+    var line_index: usize = 0;
+
+    while (true) {
+        partial_line.clearRetainingCapacity();
+        var writer_ctx = CollectWriter.init(&partial_line, allocator);
+        const streamed = reader.streamDelimiterEnding(&writer_ctx.base, options.delimiter) catch |err| {
+            ctx.logWarning(file_path, options.read_error_message, err);
+            return;
+        };
+
+        var newline_consumed = true;
+        const discard_result = reader.discardDelimiterInclusive(options.delimiter) catch |err| switch (err) {
+            error.EndOfStream => blk: {
+                newline_consumed = false;
+                break :blk 0;
+            },
+            else => {
+                ctx.logWarning(file_path, options.advance_error_message, err);
+                return;
+            },
+        };
+
+        if (streamed == 0 and partial_line.items.len == 0 and !newline_consumed) {
+            break;
+        }
+
+        streamed_total += streamed;
+        if (streamed_total > options.max_bytes) return;
+
+        var line_slice: []const u8 = partial_line.items;
+        if (options.trim_lines) {
+            line_slice = std.mem.trim(u8, line_slice, " \t\r\n");
+        }
+        if (options.skip_empty and line_slice.len == 0) {
+            if (!newline_consumed) break;
+            streamed_total += discard_result;
+            if (streamed_total > options.max_bytes) return;
+            continue;
+        }
+
+        line_index += 1;
+        try handler(handler_context, line_slice, line_index);
+
+        if (!newline_consumed) break;
+        streamed_total += discard_result;
+        if (streamed_total > options.max_bytes) return;
+    }
+}
+
 pub const ParseSessionFn = *const fn (
     allocator: std.mem.Allocator,
     ctx: *const ParseContext,

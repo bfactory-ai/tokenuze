@@ -4,8 +4,8 @@ const timeutil = @import("../time.zig");
 const SessionProvider = @import("session_provider.zig");
 
 const RawUsage = Model.RawTokenUsage;
-const CollectWriter = SessionProvider.CollectWriter;
 const MessageDeduper = SessionProvider.MessageDeduper;
+const ModelState = SessionProvider.ModelState;
 
 const Provider = SessionProvider.Provider(.{
     .name = "claude",
@@ -42,82 +42,64 @@ fn parseClaudeSessionFile(
     timezone_offset_minutes: i32,
     events: *std.ArrayList(Model.TokenUsageEvent),
 ) !void {
-    const max_session_size: usize = 128 * 1024 * 1024;
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        ctx.logWarning(file_path, "unable to open claude session file", err);
-        return;
-    };
-    defer file.close();
-
-    var io_single = std.Io.Threaded.init_single_threaded;
-    defer io_single.deinit();
-    const io = io_single.io();
-
-    var reader_buffer: [64 * 1024]u8 = undefined;
-    var file_reader = file.readerStreaming(io, reader_buffer[0..]);
-    var reader = &file_reader.interface;
-
-    var partial_line: std.ArrayList(u8) = .empty;
-    defer partial_line.deinit(allocator);
-
     var session_label = session_id;
     var session_label_overridden = false;
-    var current_model: ?[]const u8 = null;
-    var current_model_is_fallback = false;
-    var streamed_total: usize = 0;
-    var line_index: usize = 0;
+    var model_state = ModelState{};
 
-    while (true) {
-        partial_line.clearRetainingCapacity();
-        var writer_ctx = CollectWriter.init(&partial_line, allocator);
-        const streamed = reader.streamDelimiterEnding(&writer_ctx.base, '\n') catch |err| {
-            ctx.logWarning(file_path, "error while reading claude session stream", err);
-            return;
-        };
+    var handler = ClaudeLineHandler{
+        .ctx = ctx,
+        .allocator = allocator,
+        .file_path = file_path,
+        .deduper = deduper,
+        .session_label = &session_label,
+        .session_label_overridden = &session_label_overridden,
+        .timezone_offset_minutes = timezone_offset_minutes,
+        .events = events,
+        .model_state = &model_state,
+    };
 
-        var newline_consumed = true;
-        const discard_result = reader.discardDelimiterInclusive('\n') catch |err| switch (err) {
-            error.EndOfStream => blk: {
-                newline_consumed = false;
-                break :blk 0;
-            },
-            else => {
-                ctx.logWarning(file_path, "error while advancing claude session stream", err);
-                return;
-            },
-        };
-
-        if (streamed == 0 and partial_line.items.len == 0 and !newline_consumed) {
-            break;
-        }
-
-        streamed_total += streamed;
-        if (streamed_total > max_session_size) return;
-
-        const trimmed = std.mem.trim(u8, partial_line.items, " \t\r\n");
-        if (trimmed.len != 0) {
-            line_index += 1;
-            try handleClaudeLine(
-                ctx,
-                allocator,
-                trimmed,
-                line_index,
-                file_path,
-                deduper,
-                &session_label,
-                &session_label_overridden,
-                timezone_offset_minutes,
-                events,
-                &current_model,
-                &current_model_is_fallback,
-            );
-        }
-
-        if (!newline_consumed) break;
-        streamed_total += discard_result;
-        if (streamed_total > max_session_size) return;
-    }
+    try SessionProvider.streamJsonLines(
+        allocator,
+        ctx,
+        file_path,
+        .{
+            .max_bytes = 128 * 1024 * 1024,
+            .open_error_message = "unable to open claude session file",
+            .read_error_message = "error while reading claude session stream",
+            .advance_error_message = "error while advancing claude session stream",
+        },
+        &handler,
+        ClaudeLineHandler.handle,
+    );
 }
+
+const ClaudeLineHandler = struct {
+    ctx: *const SessionProvider.ParseContext,
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    deduper: ?*MessageDeduper,
+    session_label: *[]const u8,
+    session_label_overridden: *bool,
+    timezone_offset_minutes: i32,
+    events: *std.ArrayList(Model.TokenUsageEvent),
+    model_state: *ModelState,
+
+    fn handle(self: *ClaudeLineHandler, line: []const u8, line_index: usize) !void {
+        try handleClaudeLine(
+            self.ctx,
+            self.allocator,
+            line,
+            line_index,
+            self.file_path,
+            self.deduper,
+            self.session_label,
+            self.session_label_overridden,
+            self.timezone_offset_minutes,
+            self.events,
+            self.model_state,
+        );
+    }
+};
 
 fn handleClaudeLine(
     ctx: *const SessionProvider.ParseContext,
@@ -130,8 +112,7 @@ fn handleClaudeLine(
     session_label_overridden: *bool,
     timezone_offset_minutes: i32,
     events: *std.ArrayList(Model.TokenUsageEvent),
-    current_model: *?[]const u8,
-    current_model_is_fallback: *bool,
+    model_state: *ModelState,
 ) !void {
     var parsed_doc = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch |err| {
         std.log.warn(
@@ -170,8 +151,7 @@ fn handleClaudeLine(
         session_label.*,
         timezone_offset_minutes,
         events,
-        current_model,
-        current_model_is_fallback,
+        model_state,
     );
 }
 
@@ -183,8 +163,7 @@ fn emitClaudeEvent(
     session_label: []const u8,
     timezone_offset_minutes: i32,
     events: *std.ArrayList(Model.TokenUsageEvent),
-    current_model: *?[]const u8,
-    current_model_is_fallback: *bool,
+    model_state: *ModelState,
 ) !void {
     const type_value = record.get("type") orelse return;
     const type_slice = switch (type_value) {
@@ -233,22 +212,7 @@ fn emitClaudeEvent(
         }
     }
 
-    var model_name = extracted_model;
-    var is_fallback = false;
-    if (model_name) |named| {
-        current_model.* = named;
-        current_model_is_fallback.* = false;
-    } else if (current_model.*) |known| {
-        model_name = known;
-        is_fallback = current_model_is_fallback.*;
-    } else if (ctx.legacy_fallback_model) |legacy| {
-        model_name = legacy;
-        is_fallback = true;
-        current_model.* = model_name;
-        current_model_is_fallback.* = true;
-    } else {
-        return;
-    }
+    const resolved_model = SessionProvider.resolveModel(ctx, model_state, extracted_model) orelse return;
 
     const raw = parseClaudeUsage(usage_obj);
     const usage = Model.TokenUsage.fromRaw(raw);
@@ -256,20 +220,13 @@ fn emitClaudeEvent(
         return;
     }
 
-    if (ctx.legacy_fallback_model) |legacy| {
-        if (std.mem.eql(u8, model_name.?, legacy) and extracted_model == null) {
-            is_fallback = true;
-            current_model_is_fallback.* = true;
-        }
-    }
-
     const event = Model.TokenUsageEvent{
         .session_id = session_label,
         .timestamp = owned_timestamp,
         .local_iso_date = iso_date,
-        .model = model_name.?,
+        .model = resolved_model.name,
         .usage = usage,
-        .is_fallback = is_fallback,
+        .is_fallback = resolved_model.is_fallback,
         .display_input_tokens = ctx.computeDisplayInput(usage),
     };
     try events.append(allocator, event);
@@ -297,10 +254,10 @@ fn shouldEmitClaudeMessage(
 }
 
 fn parseClaudeUsage(usage_obj: std.json.ObjectMap) RawUsage {
-    const direct_input = jsonValueToU64(usage_obj.get("input_tokens"));
-    const cache_creation = jsonValueToU64(usage_obj.get("cache_creation_input_tokens"));
-    const cached_reads = jsonValueToU64(usage_obj.get("cache_read_input_tokens"));
-    const output_tokens = jsonValueToU64(usage_obj.get("output_tokens"));
+    const direct_input = SessionProvider.jsonValueToU64(usage_obj.get("input_tokens"));
+    const cache_creation = SessionProvider.jsonValueToU64(usage_obj.get("cache_creation_input_tokens"));
+    const cached_reads = SessionProvider.jsonValueToU64(usage_obj.get("cache_read_input_tokens"));
+    const output_tokens = SessionProvider.jsonValueToU64(usage_obj.get("output_tokens"));
 
     const input_total = std.math.add(u64, direct_input, cache_creation) catch std.math.maxInt(u64);
     const with_cached = std.math.add(u64, input_total, cached_reads) catch std.math.maxInt(u64);
@@ -313,19 +270,6 @@ fn parseClaudeUsage(usage_obj: std.json.ObjectMap) RawUsage {
         .output_tokens = output_tokens,
         .reasoning_output_tokens = 0,
         .total_tokens = total_tokens,
-    };
-}
-
-fn jsonValueToU64(maybe_value: ?std.json.Value) u64 {
-    const value = maybe_value orelse return 0;
-    return switch (value) {
-        .integer => |val| if (val >= 0) @as(u64, @intCast(val)) else 0,
-        .float => |val| if (val >= 0)
-            std.math.lossyCast(u64, @floor(val))
-        else
-            0,
-        .number_string => |slice| Model.parseTokenNumber(slice),
-        else => 0,
     };
 }
 
