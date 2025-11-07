@@ -44,14 +44,14 @@ pub fn loadRemotePricingOnce(
     stats.attempted = true;
     var fetch_timer = try std.time.Timer.start();
     const before_fetch = pricing.count();
-    var fetch_failed = false;
+    var fetch_error: ?anyerror = null;
     fetchRemotePricing(shared_allocator, temp_allocator, pricing) catch |err| {
-        fetch_failed = true;
-        stats.failure = err;
+        fetch_error = err;
     };
     stats.elapsed_ms = nsToMs(fetch_timer.read());
-    if (fetch_failed) {
+    if (fetch_error) |err| {
         stats.success = false;
+        stats.failure = err;
     } else {
         stats.models_added = pricing.count() - before_fetch;
         stats.success = true;
