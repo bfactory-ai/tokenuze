@@ -24,24 +24,12 @@ const ProviderExports = provider.makeProvider(.{
     .fallback_pricing = &.{},
     .session_file_ext = ".jsonl",
     .cached_counts_overlap_input = false,
-    .parse_session_fn = parseSessionFile,
+    .parse_session_fn = parseClaudeSessionFile,
     .requires_deduper = true,
 });
 
 pub const collect = ProviderExports.collect;
 pub const loadPricingData = ProviderExports.loadPricingData;
-
-fn parseSessionFile(
-    allocator: std.mem.Allocator,
-    ctx: *const provider.ParseContext,
-    session_id: []const u8,
-    file_path: []const u8,
-    deduper: ?*provider.MessageDeduper,
-    timezone_offset_minutes: i32,
-    events: *std.ArrayList(model.TokenUsageEvent),
-) !void {
-    try parseClaudeSessionFile(allocator, ctx, session_id, file_path, deduper, timezone_offset_minutes, events);
-}
 
 fn parseClaudeSessionFile(
     allocator: std.mem.Allocator,
