@@ -105,10 +105,12 @@ const PricingFeedParser = struct {
     pricing: *Model.PricingMap,
 
     pub fn parse(self: *PricingFeedParser, reader: *std.json.Reader) !void {
-        var key_buffer = std.array_list.Managed(u8).init(self.temp_allocator);
-        defer key_buffer.deinit();
-        var scratch = std.array_list.Managed(u8).init(self.temp_allocator);
-        defer scratch.deinit();
+        var key_buffer: std.ArrayList(u8) = .empty;
+        defer key_buffer.deinit(self.temp_allocator);
+        var scratch: std.ArrayList(u8) = .empty;
+        defer scratch.deinit(self.temp_allocator);
+        var alias_buffer: std.ArrayList(u8) = .empty;
+        defer alias_buffer.deinit(self.temp_allocator);
 
         if ((try reader.next()) != .object_begin) return error.InvalidResponse;
 
@@ -122,10 +124,10 @@ const PricingFeedParser = struct {
                     }
                 },
                 .string => {
-                    const name_slice = try readStringValue(reader, &key_buffer);
-                    const maybe_pricing = try self.parseEntry(reader, &scratch);
+                    const name_slice = try readStringValue(self.temp_allocator, reader, &key_buffer);
+                    const maybe_pricing = try self.parseEntry(self.temp_allocator, reader, &scratch);
                     if (maybe_pricing) |entry| {
-                        try self.insertPricingEntries(name_slice, entry);
+                        try self.insertPricingEntries(name_slice, entry, &alias_buffer);
                     }
                     key_buffer.clearRetainingCapacity();
                 },
@@ -136,8 +138,9 @@ const PricingFeedParser = struct {
 
     fn parseEntry(
         self: *PricingFeedParser,
+        scratch_allocator: std.mem.Allocator,
         reader: *std.json.Reader,
-        scratch: *std.array_list.Managed(u8),
+        scratch: *std.ArrayList(u8),
     ) !?Model.ModelPricing {
         _ = self;
         if ((try reader.next()) != .object_begin) {
@@ -157,15 +160,15 @@ const PricingFeedParser = struct {
                     break;
                 },
                 .string => {
-                    const field = try readStringValue(reader, scratch);
+                    const field = try readStringValue(scratch_allocator, reader, scratch);
                     if (std.mem.eql(u8, field, "input_cost_per_token")) {
-                        input_rate = try readNumber(reader, scratch);
+                        input_rate = try readNumber(scratch_allocator, reader, scratch);
                     } else if (std.mem.eql(u8, field, "output_cost_per_token")) {
-                        output_rate = try readNumber(reader, scratch);
+                        output_rate = try readNumber(scratch_allocator, reader, scratch);
                     } else if (std.mem.eql(u8, field, "cache_creation_input_token_cost")) {
-                        cache_creation_rate = try readNumber(reader, scratch);
+                        cache_creation_rate = try readNumber(scratch_allocator, reader, scratch);
                     } else if (std.mem.eql(u8, field, "cache_read_input_token_cost")) {
-                        cached_rate = try readNumber(reader, scratch);
+                        cached_rate = try readNumber(scratch_allocator, reader, scratch);
                     } else {
                         try reader.skipValue();
                     }
@@ -185,15 +188,50 @@ const PricingFeedParser = struct {
         };
     }
 
-    fn insertPricingEntries(self: *PricingFeedParser, name: []const u8, entry: Model.ModelPricing) !void {
+    fn insertPricingEntries(
+        self: *PricingFeedParser,
+        name: []const u8,
+        entry: Model.ModelPricing,
+        alias_buffer: *std.ArrayList(u8),
+    ) !void {
         try self.putPricing(name, entry);
 
         if (std.mem.lastIndexOfScalar(u8, name, '/')) |idx| {
             const alias = name[idx + 1 ..];
             if (alias.len != 0 and !std.mem.eql(u8, alias, name)) {
                 try self.putPricing(alias, entry);
+                try self.insertAtDateAlias(alias, entry, alias_buffer);
             }
         }
+
+        try self.insertAtDateAlias(name, entry, alias_buffer);
+    }
+
+    fn insertAtDateAlias(
+        self: *PricingFeedParser,
+        name: []const u8,
+        entry: Model.ModelPricing,
+        alias_buffer: *std.ArrayList(u8),
+    ) !void {
+        const at_idx = std.mem.indexOfScalar(u8, name, '@') orelse return;
+        const suffix = name[at_idx + 1 ..];
+        if (!looksLikeDateSuffix(suffix)) return;
+
+        alias_buffer.clearRetainingCapacity();
+        try alias_buffer.ensureTotalCapacity(self.temp_allocator, name.len);
+        try alias_buffer.appendSlice(self.temp_allocator, name[0..at_idx]);
+        try alias_buffer.append(self.temp_allocator, '-');
+        try alias_buffer.appendSlice(self.temp_allocator, suffix);
+
+        try self.putPricing(alias_buffer.items, entry);
+    }
+
+    fn looksLikeDateSuffix(suffix: []const u8) bool {
+        if (suffix.len != 8) return false;
+        for (suffix) |ch| {
+            if (!std.ascii.isDigit(ch)) return false;
+        }
+        return true;
     }
 
     fn putPricing(self: *PricingFeedParser, key: []const u8, entry: Model.ModelPricing) !void {
@@ -205,21 +243,29 @@ const PricingFeedParser = struct {
 };
 
 fn readStringValue(
+    allocator: std.mem.Allocator,
     reader: *std.json.Reader,
-    buffer: *std.array_list.Managed(u8),
+    buffer: *std.ArrayList(u8),
 ) ![]const u8 {
-    buffer.clearRetainingCapacity();
-    const slice = try reader.allocNextIntoArrayList(buffer, .alloc_if_needed);
-    return slice orelse buffer.items;
+    var managed = buffer.toManaged(allocator);
+    defer buffer.* = managed.moveToUnmanaged();
+
+    managed.clearRetainingCapacity();
+    const slice = try reader.allocNextIntoArrayList(&managed, .alloc_if_needed);
+    return slice orelse managed.items;
 }
 
 fn readNumber(
+    allocator: std.mem.Allocator,
     reader: *std.json.Reader,
-    buffer: *std.array_list.Managed(u8),
+    buffer: *std.ArrayList(u8),
 ) !f64 {
-    buffer.clearRetainingCapacity();
-    const slice = try reader.allocNextIntoArrayList(buffer, .alloc_if_needed);
-    const number_slice = slice orelse buffer.items;
+    var managed = buffer.toManaged(allocator);
+    defer buffer.* = managed.moveToUnmanaged();
+
+    managed.clearRetainingCapacity();
+    const slice = try reader.allocNextIntoArrayList(&managed, .alloc_if_needed);
+    const number_slice = slice orelse managed.items;
     return std.fmt.parseFloat(f64, number_slice) catch return error.InvalidNumber;
 }
 
@@ -1802,6 +1848,8 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             const allocator = std.testing.allocator;
             var pricing = Model.PricingMap.init(allocator);
             defer Model.deinitPricingMap(&pricing, allocator);
+            var alias_buffer: std.ArrayList(u8) = .empty;
+            defer alias_buffer.deinit(allocator);
 
             var parser = PricingFeedParser{
                 .allocator = allocator,
@@ -1815,7 +1863,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 .cached_input_cost_per_m = 1,
                 .output_cost_per_m = 1,
             };
-            try parser.insertPricingEntries("gemini/gemini-flash-latest", pricing_entry);
+            try parser.insertPricingEntries("gemini/gemini-flash-latest", pricing_entry, &alias_buffer);
 
             try std.testing.expect(pricing.get("gemini/gemini-flash-latest") != null);
             try std.testing.expect(pricing.get("gemini-flash-latest") != null);
