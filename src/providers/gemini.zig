@@ -38,3 +38,4 @@ const Provider = SessionProvider.Provider(.{
 });
 
 pub const collect = Provider.collect;
+pub const loadPricingData = Provider.loadPricingData;

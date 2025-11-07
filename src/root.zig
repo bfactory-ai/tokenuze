@@ -3,6 +3,7 @@ const Model = @import("model.zig");
 const claude = @import("providers/claude.zig");
 const codex = @import("providers/codex.zig");
 const gemini = @import("providers/gemini.zig");
+const session_provider = @import("providers/session_provider.zig");
 const render = @import("render.zig");
 const io_util = @import("io_util.zig");
 const timeutil = @import("time.zig");
@@ -34,16 +35,38 @@ const CollectFn = *const fn (
     ?std.Progress.Node,
 ) anyerror!void;
 
+const LoadPricingFn = *const fn (
+    std.mem.Allocator,
+    std.mem.Allocator,
+    *Model.PricingMap,
+) anyerror!void;
+
 pub const ProviderSpec = struct {
     name: []const u8,
     phase_label: []const u8,
     collect: CollectFn,
+    load_pricing: LoadPricingFn,
 };
 
 pub const providers = [_]ProviderSpec{
-    .{ .name = "claude", .phase_label = "collect_claude", .collect = claude.collect },
-    .{ .name = "codex", .phase_label = "collect_codex", .collect = codex.collect },
-    .{ .name = "gemini", .phase_label = "collect_gemini", .collect = gemini.collect },
+    .{
+        .name = "claude",
+        .phase_label = "collect_claude",
+        .collect = claude.collect,
+        .load_pricing = claude.loadPricingData,
+    },
+    .{
+        .name = "codex",
+        .phase_label = "collect_codex",
+        .collect = codex.collect,
+        .load_pricing = codex.loadPricingData,
+    },
+    .{
+        .name = "gemini",
+        .phase_label = "collect_gemini",
+        .collect = gemini.collect,
+        .load_pricing = gemini.loadPricingData,
+    },
 };
 
 const provider_name_list = initProviderNames();
@@ -260,10 +283,13 @@ fn collectSummaryInternal(
 
     var total_timer = try std.time.Timer.start();
 
+    if (!selection.isEmpty()) {
+        try loadPricingOnce(allocator, temp_allocator, selection, &pricing_map, progress_parent);
+    }
+
     for (providers, 0..) |provider, idx| {
         if (!selection.includesIndex(idx)) continue;
         const before_events = summary_builder.eventCount();
-        const before_pricing = pricing_map.count();
         const stats = blk: {
             var collect_phase = try PhaseTracker.start(progress_parent, provider.phase_label, 0);
             defer collect_phase.finish();
@@ -272,19 +298,15 @@ fn collectSummaryInternal(
                 .elapsed = collect_phase.elapsedMs(),
                 .events_added = summary_builder.eventCount() - before_events,
                 .total_events = summary_builder.eventCount(),
-                .pricing_total = pricing_map.count(),
-                .pricing_added = pricing_map.count() - before_pricing,
             };
         };
         std.log.info(
-            "phase.{s} completed in {d:.2}ms (events += {d}, total_events={d}, pricing_models={d}, pricing_added={d})",
+            "phase.{s} completed in {d:.2}ms (events += {d}, total_events={d})",
             .{
                 provider.phase_label,
                 stats.elapsed,
                 stats.events_added,
                 stats.total_events,
-                stats.pricing_total,
-                stats.pricing_added,
             },
         );
     }
@@ -344,6 +366,52 @@ fn collectSummaryInternal(
     if (enable_progress) std.Progress.setStatus(.success);
 
     return SummaryResult{ .builder = summary_builder, .totals = totals };
+}
+
+fn loadPricingOnce(
+    allocator: std.mem.Allocator,
+    temp_allocator: std.mem.Allocator,
+    selection: ProviderSelection,
+    pricing: *Model.PricingMap,
+    progress_parent: ?*std.Progress.Node,
+) !void {
+    var pricing_phase = try PhaseTracker.start(progress_parent, "load pricing", 0);
+    defer pricing_phase.finish();
+
+    const before_models = pricing.count();
+    const remote_stats = try session_provider.loadRemotePricingOnce(allocator, temp_allocator, pricing);
+    if (remote_stats.attempted) {
+        if (remote_stats.success) {
+            std.log.info(
+                "pricing.remote_fetch completed in {d:.2}ms (models += {d})",
+                .{ remote_stats.elapsed_ms, remote_stats.models_added },
+            );
+        } else {
+            std.log.warn(
+                "pricing.remote_fetch failed after {d:.2}ms ({s})",
+                .{ remote_stats.elapsed_ms, @errorName(remote_stats.failure.?) },
+            );
+        }
+    } else {
+        std.log.info("pricing.remote_fetch skipped (already loaded)", .{});
+    }
+
+    var fallback_timer = try std.time.Timer.start();
+    for (providers, 0..) |provider, idx| {
+        if (!selection.includesIndex(idx)) continue;
+        try provider.load_pricing(allocator, temp_allocator, pricing);
+    }
+    const fallback_elapsed = nsToMs(fallback_timer.read());
+    const fallback_added = pricing.count() - (before_models + remote_stats.models_added);
+    std.log.info(
+        "pricing.fallback ensured in {d:.2}ms (models += {d})",
+        .{ fallback_elapsed, fallback_added },
+    );
+
+    std.log.info(
+        "phase.load_pricing completed in {d:.2}ms (models={d}, models_added={d})",
+        .{ pricing_phase.elapsedMs(), pricing.count(), pricing.count() - before_models },
+    );
 }
 
 fn summaryLessThan(_: void, lhs: DailySummary, rhs: DailySummary) bool {

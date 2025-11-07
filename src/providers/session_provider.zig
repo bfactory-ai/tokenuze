@@ -25,6 +25,205 @@ pub const ProviderConfig = struct {
 
 var remote_pricing_loaded = std.atomic.Value(bool).init(false);
 
+pub const RemotePricingStats = struct {
+    attempted: bool = false,
+    success: bool = false,
+    models_added: usize = 0,
+    elapsed_ms: f64 = 0,
+    failure: ?anyerror = null,
+};
+
+pub fn loadRemotePricingOnce(
+    shared_allocator: std.mem.Allocator,
+    temp_allocator: std.mem.Allocator,
+    pricing: *Model.PricingMap,
+) !RemotePricingStats {
+    var stats: RemotePricingStats = .{};
+    if (remote_pricing_loaded.load(.acquire)) return stats;
+
+    stats.attempted = true;
+    var fetch_timer = try std.time.Timer.start();
+    const before_fetch = pricing.count();
+    fetchRemotePricing(shared_allocator, temp_allocator, pricing) catch |err| {
+        stats.success = false;
+        stats.failure = err;
+        stats.elapsed_ms = nsToMs(fetch_timer.read());
+        return stats;
+    };
+
+    stats.elapsed_ms = nsToMs(fetch_timer.read());
+    stats.models_added = pricing.count() - before_fetch;
+    stats.success = true;
+    remote_pricing_loaded.store(true, .release);
+    return stats;
+}
+
+fn nsToMs(ns: u64) f64 {
+    return @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(std.time.ns_per_ms));
+}
+
+fn fetchRemotePricing(
+    shared_allocator: std.mem.Allocator,
+    temp_allocator: std.mem.Allocator,
+    pricing: *Model.PricingMap,
+) !void {
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+
+    var client = std.http.Client{
+        .allocator = temp_allocator,
+        .io = io_single.io(),
+    };
+    defer client.deinit();
+
+    const uri = try std.Uri.parse(Model.PRICING_URL);
+    var request = try client.request(.GET, uri, .{
+        .headers = .{ .accept_encoding = .{ .override = "identity" } },
+    });
+    defer request.deinit();
+    try request.sendBodiless();
+
+    var response = try request.receiveHead(&.{});
+    if (response.head.status.class() != .success) return error.HttpError;
+
+    var transfer_buffer: [4096]u8 = undefined;
+    const body_reader = response.reader(&transfer_buffer);
+
+    var json_reader = std.json.Reader.init(temp_allocator, body_reader);
+    defer json_reader.deinit();
+
+    var parser = PricingFeedParser{
+        .allocator = shared_allocator,
+        .temp_allocator = temp_allocator,
+        .pricing = pricing,
+    };
+    try parser.parse(&json_reader);
+}
+
+const PricingFeedParser = struct {
+    allocator: std.mem.Allocator,
+    temp_allocator: std.mem.Allocator,
+    pricing: *Model.PricingMap,
+
+    pub fn parse(self: *PricingFeedParser, reader: *std.json.Reader) !void {
+        var key_buffer = std.array_list.Managed(u8).init(self.temp_allocator);
+        defer key_buffer.deinit();
+        var scratch = std.array_list.Managed(u8).init(self.temp_allocator);
+        defer scratch.deinit();
+
+        if ((try reader.next()) != .object_begin) return error.InvalidResponse;
+
+        while (true) {
+            switch (try reader.peekNextTokenType()) {
+                .object_end => {
+                    _ = try reader.next();
+                    switch (try reader.next()) {
+                        .end_of_document => return,
+                        else => return error.InvalidResponse,
+                    }
+                },
+                .string => {
+                    const name_slice = try readStringValue(reader, &key_buffer);
+                    const maybe_pricing = try self.parseEntry(reader, &scratch);
+                    if (maybe_pricing) |entry| {
+                        try self.insertPricingEntries(name_slice, entry);
+                    }
+                    key_buffer.clearRetainingCapacity();
+                },
+                else => return error.InvalidResponse,
+            }
+        }
+    }
+
+    fn parseEntry(
+        self: *PricingFeedParser,
+        reader: *std.json.Reader,
+        scratch: *std.array_list.Managed(u8),
+    ) !?Model.ModelPricing {
+        _ = self;
+        if ((try reader.next()) != .object_begin) {
+            try reader.skipValue();
+            return null;
+        }
+
+        var input_rate: ?f64 = null;
+        var cache_creation_rate: ?f64 = null;
+        var cached_rate: ?f64 = null;
+        var output_rate: ?f64 = null;
+
+        while (true) {
+            switch (try reader.peekNextTokenType()) {
+                .object_end => {
+                    _ = try reader.next();
+                    break;
+                },
+                .string => {
+                    const field = try readStringValue(reader, scratch);
+                    if (std.mem.eql(u8, field, "input_cost_per_token")) {
+                        input_rate = try readNumber(reader, scratch);
+                    } else if (std.mem.eql(u8, field, "output_cost_per_token")) {
+                        output_rate = try readNumber(reader, scratch);
+                    } else if (std.mem.eql(u8, field, "cache_creation_input_token_cost")) {
+                        cache_creation_rate = try readNumber(reader, scratch);
+                    } else if (std.mem.eql(u8, field, "cache_read_input_token_cost")) {
+                        cached_rate = try readNumber(reader, scratch);
+                    } else {
+                        try reader.skipValue();
+                    }
+                },
+                else => return error.InvalidResponse,
+            }
+        }
+
+        if (input_rate == null or output_rate == null) return null;
+        const creation = cache_creation_rate orelse input_rate.?;
+        const cached = cached_rate orelse input_rate.?;
+        return Model.ModelPricing{
+            .input_cost_per_m = input_rate.? * Model.MILLION,
+            .cache_creation_cost_per_m = creation * Model.MILLION,
+            .cached_input_cost_per_m = cached * Model.MILLION,
+            .output_cost_per_m = output_rate.? * Model.MILLION,
+        };
+    }
+
+    fn insertPricingEntries(self: *PricingFeedParser, name: []const u8, entry: Model.ModelPricing) !void {
+        try self.putPricing(name, entry);
+
+        if (std.mem.lastIndexOfScalar(u8, name, '/')) |idx| {
+            const alias = name[idx + 1 ..];
+            if (alias.len != 0 and !std.mem.eql(u8, alias, name)) {
+                try self.putPricing(alias, entry);
+            }
+        }
+    }
+
+    fn putPricing(self: *PricingFeedParser, key: []const u8, entry: Model.ModelPricing) !void {
+        if (self.pricing.get(key) != null) return;
+        const copied_name = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(copied_name);
+        try self.pricing.put(copied_name, entry);
+    }
+};
+
+fn readStringValue(
+    reader: *std.json.Reader,
+    buffer: *std.array_list.Managed(u8),
+) ![]const u8 {
+    buffer.clearRetainingCapacity();
+    const slice = try reader.allocNextIntoArrayList(buffer, .alloc_if_needed);
+    return slice orelse buffer.items;
+}
+
+fn readNumber(
+    reader: *std.json.Reader,
+    buffer: *std.array_list.Managed(u8),
+) !f64 {
+    buffer.clearRetainingCapacity();
+    const slice = try reader.allocNextIntoArrayList(buffer, .alloc_if_needed);
+    const number_slice = slice orelse buffer.items;
+    return std.fmt.parseFloat(f64, number_slice) catch return error.InvalidNumber;
+}
+
 pub fn Provider(comptime cfg: ProviderConfig) type {
     const provider_name = cfg.name;
     const sessions_dir_suffix = cfg.sessions_dir_suffix;
@@ -111,12 +310,13 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             temp_allocator: std.mem.Allocator,
             summaries: *Model.SummaryBuilder,
             filters: Model.DateFilters,
-            pricing: *Model.PricingMap,
+            _pricing: *Model.PricingMap,
             progress: ?std.Progress.Node,
         ) !void {
             var total_timer = try std.time.Timer.start();
+            _ = _pricing;
 
-            if (progress) |node| std.Progress.Node.setEstimatedTotalItems(node, 2);
+            if (progress) |node| std.Progress.Node.setEstimatedTotalItems(node, 1);
 
             var events_progress: ?std.Progress.Node = null;
             if (progress) |node| {
@@ -139,20 +339,6 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 .{ provider_name, after_events - before_events, nsToMs(events_timer.read()) },
             );
 
-            var pricing_progress: ?std.Progress.Node = null;
-            if (progress) |node| {
-                pricing_progress = std.Progress.Node.start(node, "pricing", 0);
-            }
-            var pricing_timer = try std.time.Timer.start();
-            const before_pricing = pricing.count();
-            try loadPricing(shared_allocator, temp_allocator, pricing);
-            const after_pricing = pricing.count();
-            if (pricing_progress) |node| std.Progress.Node.end(node);
-            std.log.info(
-                "{s}.loadPricing added {d} pricing models (total={d}) in {d:.2}ms",
-                .{ provider_name, after_pricing - before_pricing, after_pricing, nsToMs(pricing_timer.read()) },
-            );
-
             std.log.info(
                 "{s}.collect completed in {d:.2}ms",
                 .{ provider_name, nsToMs(total_timer.read()) },
@@ -173,7 +359,8 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             temp_allocator: std.mem.Allocator,
             pricing: *Model.PricingMap,
         ) !void {
-            try loadPricing(shared_allocator, temp_allocator, pricing);
+            _ = temp_allocator;
+            try ensureFallbackPricing(shared_allocator, pricing);
         }
 
         fn logSessionWarning(file_path: []const u8, message: []const u8, err: anyerror) void {
@@ -1439,225 +1626,12 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             }
         }
 
-        fn loadPricing(
-            shared_allocator: std.mem.Allocator,
-            temp_allocator: std.mem.Allocator,
-            pricing: *Model.PricingMap,
-        ) !void {
-            var total_timer = try std.time.Timer.start();
-
-            var fetch_attempted = false;
-            var fetch_ok = true;
-            var fetch_error: ?anyerror = null;
-            if (!remote_pricing_loaded.load(.acquire)) {
-                fetch_attempted = true;
-                var fetch_timer = try std.time.Timer.start();
-                const before_fetch = pricing.count();
-                fetchRemotePricing(shared_allocator, temp_allocator, pricing) catch |err| {
-                    fetch_ok = false;
-                    fetch_error = err;
-                };
-                const fetch_elapsed = nsToMs(fetch_timer.read());
-                if (fetch_ok) {
-                    remote_pricing_loaded.store(true, .release);
-                    std.log.info(
-                        "{s}.loadPricing: remote pricing fetched in {d:.2}ms (models += {d})",
-                        .{ provider_name, fetch_elapsed, pricing.count() - before_fetch },
-                    );
-                } else {
-                    std.log.warn(
-                        "{s}.loadPricing: remote pricing failed after {d:.2}ms ({s})",
-                        .{ provider_name, fetch_elapsed, @errorName(fetch_error.?) },
-                    );
-                }
-            }
-
-            if (!fetch_attempted) {
-                std.log.info("{s}.loadPricing: remote pricing already fetched; skipping", .{provider_name});
-            }
-
-            const had_pricing = pricing.count() != 0;
-            var fallback_timer = try std.time.Timer.start();
-            try ensureFallbackPricing(shared_allocator, pricing);
-            std.log.info(
-                "{s}.loadPricing: {s} fallback pricing in {d:.2}ms (models={d})",
-                .{ provider_name, if (had_pricing) "ensured" else "inserted", nsToMs(fallback_timer.read()), pricing.count() },
-            );
-
-            std.log.info(
-                "{s}.loadPricing completed in {d:.2}ms (models={d})",
-                .{ provider_name, nsToMs(total_timer.read()), pricing.count() },
-            );
-        }
-
-        fn fetchRemotePricing(
-            shared_allocator: std.mem.Allocator,
-            temp_allocator: std.mem.Allocator,
-            pricing: *Model.PricingMap,
-        ) !void {
-            var io_single = std.Io.Threaded.init_single_threaded;
-            defer io_single.deinit();
-
-            var client = std.http.Client{
-                .allocator = temp_allocator,
-                .io = io_single.io(),
-            };
-            defer client.deinit();
-
-            const uri = try std.Uri.parse(Model.PRICING_URL);
-            var request = try client.request(.GET, uri, .{
-                .headers = .{ .accept_encoding = .{ .override = "identity" } },
-            });
-            defer request.deinit();
-            try request.sendBodiless();
-
-            var response = try request.receiveHead(&.{});
-            if (response.head.status.class() != .success) return error.HttpError;
-
-            var transfer_buffer: [4096]u8 = undefined;
-            const body_reader = response.reader(&transfer_buffer);
-
-            var json_reader = std.json.Reader.init(temp_allocator, body_reader);
-            defer json_reader.deinit();
-
-            var parser = PricingFeedParser{
-                .allocator = shared_allocator,
-                .temp_allocator = temp_allocator,
-                .pricing = pricing,
-            };
-            try parser.parse(&json_reader);
-        }
-
         fn ensureFallbackPricing(shared_allocator: std.mem.Allocator, pricing: *Model.PricingMap) !void {
             for (FALLBACK_PRICING) |fallback| {
                 if (pricing.get(fallback.name) != null) continue;
                 const key = try shared_allocator.dupe(u8, fallback.name);
                 try pricing.put(key, fallback.pricing);
             }
-        }
-
-        const PricingFeedParser = struct {
-            allocator: std.mem.Allocator,
-            temp_allocator: std.mem.Allocator,
-            pricing: *Model.PricingMap,
-
-            pub fn parse(self: *PricingFeedParser, reader: *std.json.Reader) !void {
-                var key_buffer = std.array_list.Managed(u8).init(self.temp_allocator);
-                defer key_buffer.deinit();
-                var scratch = std.array_list.Managed(u8).init(self.temp_allocator);
-                defer scratch.deinit();
-
-                if ((try reader.next()) != .object_begin) return error.InvalidResponse;
-
-                while (true) {
-                    switch (try reader.peekNextTokenType()) {
-                        .object_end => {
-                            _ = try reader.next();
-                            switch (try reader.next()) {
-                                .end_of_document => return,
-                                else => return error.InvalidResponse,
-                            }
-                        },
-                        .string => {
-                            const name_slice = try readStringValue(reader, &key_buffer);
-                            const maybe_pricing = try self.parseEntry(reader, &scratch);
-                            if (maybe_pricing) |entry| {
-                                try self.insertPricingEntries(name_slice, entry);
-                            }
-                            key_buffer.clearRetainingCapacity();
-                        },
-                        else => return error.InvalidResponse,
-                    }
-                }
-            }
-
-            fn parseEntry(
-                self: *PricingFeedParser,
-                reader: *std.json.Reader,
-                scratch: *std.array_list.Managed(u8),
-            ) !?Model.ModelPricing {
-                _ = self;
-                if ((try reader.next()) != .object_begin) {
-                    try reader.skipValue();
-                    return null;
-                }
-
-                var input_rate: ?f64 = null;
-                var cache_creation_rate: ?f64 = null;
-                var cached_rate: ?f64 = null;
-                var output_rate: ?f64 = null;
-
-                while (true) {
-                    switch (try reader.peekNextTokenType()) {
-                        .object_end => {
-                            _ = try reader.next();
-                            break;
-                        },
-                        .string => {
-                            const field = try readStringValue(reader, scratch);
-                            if (std.mem.eql(u8, field, "input_cost_per_token")) {
-                                input_rate = try readNumber(reader, scratch);
-                            } else if (std.mem.eql(u8, field, "output_cost_per_token")) {
-                                output_rate = try readNumber(reader, scratch);
-                            } else if (std.mem.eql(u8, field, "cache_creation_input_token_cost")) {
-                                cache_creation_rate = try readNumber(reader, scratch);
-                            } else if (std.mem.eql(u8, field, "cache_read_input_token_cost")) {
-                                cached_rate = try readNumber(reader, scratch);
-                            } else {
-                                try reader.skipValue();
-                            }
-                        },
-                        else => return error.InvalidResponse,
-                    }
-                }
-
-                if (input_rate == null or output_rate == null) return null;
-                const creation = cache_creation_rate orelse input_rate.?;
-                const cached = cached_rate orelse input_rate.?;
-                return Model.ModelPricing{
-                    .input_cost_per_m = input_rate.? * Model.MILLION,
-                    .cache_creation_cost_per_m = creation * Model.MILLION,
-                    .cached_input_cost_per_m = cached * Model.MILLION,
-                    .output_cost_per_m = output_rate.? * Model.MILLION,
-                };
-            }
-
-            fn insertPricingEntries(self: *PricingFeedParser, name: []const u8, entry: Model.ModelPricing) !void {
-                try self.putPricing(name, entry);
-
-                if (std.mem.lastIndexOfScalar(u8, name, '/')) |idx| {
-                    const alias = name[idx + 1 ..];
-                    if (alias.len != 0 and !std.mem.eql(u8, alias, name)) {
-                        try self.putPricing(alias, entry);
-                    }
-                }
-            }
-
-            fn putPricing(self: *PricingFeedParser, key: []const u8, entry: Model.ModelPricing) !void {
-                if (self.pricing.get(key) != null) return;
-                const copied_name = try self.allocator.dupe(u8, key);
-                errdefer self.allocator.free(copied_name);
-                try self.pricing.put(copied_name, entry);
-            }
-        };
-
-        fn readStringValue(
-            reader: *std.json.Reader,
-            buffer: *std.array_list.Managed(u8),
-        ) ![]const u8 {
-            buffer.clearRetainingCapacity();
-            const slice = try reader.allocNextIntoArrayList(buffer, .alloc_if_needed);
-            return slice orelse buffer.items;
-        }
-
-        fn readNumber(
-            reader: *std.json.Reader,
-            buffer: *std.array_list.Managed(u8),
-        ) !f64 {
-            buffer.clearRetainingCapacity();
-            const slice = try reader.allocNextIntoArrayList(buffer, .alloc_if_needed);
-            const number_slice = slice orelse buffer.items;
-            return std.fmt.parseFloat(f64, number_slice) catch return error.InvalidNumber;
         }
 
         fn duplicateNonEmpty(arena: std.mem.Allocator, value: []const u8) !?[]const u8 {
@@ -1714,10 +1688,6 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 return;
             }
         };
-
-        fn nsToMs(ns: u64) f64 {
-            return @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(std.time.ns_per_ms));
-        }
 
         test "codex parser emits usage events from token_count entries" {
             const allocator = std.testing.allocator;
@@ -1831,15 +1801,10 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
 
         test "pricing parser stores alias for slash-separated model names" {
             const allocator = std.testing.allocator;
-            const AliasProvider = Provider(.{
-                .name = "alias-test",
-                .sessions_dir_suffix = "/unused",
-            });
-
             var pricing = Model.PricingMap.init(allocator);
             defer Model.deinitPricingMap(&pricing, allocator);
 
-            var parser = AliasProvider.PricingFeedParser{
+            var parser = PricingFeedParser{
                 .allocator = allocator,
                 .temp_allocator = allocator,
                 .pricing = &pricing,
