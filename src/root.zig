@@ -17,10 +17,10 @@ pub const std_options: std.Options = .{
     .logFn = logFn,
 };
 
-var runtime_log_level: std.atomic.Value(std.log.Level) = .init(.info);
+var runtime_log_level = std.atomic.Value(u8).init(@intFromEnum(std.log.Level.info));
 
 pub fn setLogLevel(level: std.log.Level) void {
-    runtime_log_level.store(level, .release);
+    runtime_log_level.store(@intFromEnum(level), .release);
 }
 
 pub fn logFn(
@@ -29,7 +29,8 @@ pub fn logFn(
     comptime format: []const u8,
     args: anytype,
 ) void {
-    if (@intFromEnum(level) > @intFromEnum(runtime_log_level.load(.acquire))) return;
+    const current_level: std.log.Level = @enumFromInt(runtime_log_level.load(.acquire));
+    if (@intFromEnum(level) > @intFromEnum(current_level)) return;
     std.log.defaultLog(level, scope, format, args);
 }
 
