@@ -4,10 +4,7 @@ const tokenuze = @import("tokenuze");
 const cli = @import("cli.zig");
 const build_options = @import("build_options");
 
-pub const std_options: std.Options = .{
-    .log_level = .debug,
-    .logFn = tokenuze.logFn,
-};
+pub const std_options: std.Options = tokenuze.std_options;
 
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
