@@ -747,8 +747,8 @@ fn lookupBySubstring(
             return entry.value_ptr.*;
         }
 
-        const forward = containsIgnoreCase(key, lookup_name);
-        const backward = containsIgnoreCase(lookup_name, key);
+        const forward = std.ascii.indexOfIgnoreCase(key, lookup_name) != null;
+        const backward = std.ascii.indexOfIgnoreCase(lookup_name, key) != null;
         if (!forward and !backward) continue;
 
         const score = if (forward)
@@ -796,23 +796,6 @@ fn ratioScore(numerator: usize, denominator: usize) usize {
     if (denominator == 0) return 0;
     const scaled = (@as(u128, numerator) * 100) / @as(u128, denominator);
     return std.math.cast(usize, scaled) orelse std.math.maxInt(usize);
-}
-
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (needle.len > haystack.len) return false;
-    var idx: usize = 0;
-    while (idx + needle.len <= haystack.len) : (idx += 1) {
-        var matched = true;
-        for (needle, 0..) |ch, sub_idx| {
-            if (std.ascii.toLower(haystack[idx + sub_idx]) != std.ascii.toLower(ch)) {
-                matched = false;
-                break;
-            }
-        }
-        if (matched) return true;
-    }
-    return false;
 }
 
 fn createDateVariant(
