@@ -292,6 +292,7 @@ pub const Renderer = struct {
         const integer = raw[0..dot_index];
         const decimals = if (dot_index < raw.len) raw[dot_index..] else "";
         const comma_integer = try formatDigitsWithCommas(allocator, integer);
+        defer allocator.free(comma_integer);
         return try std.fmt.allocPrint(allocator, "{s}${s}{s}", .{
             if (negative) "-" else "",
             comma_integer,
