@@ -2,6 +2,29 @@ const std = @import("std");
 const Model = @import("model.zig");
 
 pub const Renderer = struct {
+    const Alignment = enum { left, right };
+    const Column = struct {
+        header: []const u8,
+        alignment: Alignment,
+    };
+
+    const table_columns = [_]Column{
+        .{ .header = "Date", .alignment = .left },
+        .{ .header = "Models", .alignment = .left },
+        .{ .header = "Input", .alignment = .right },
+        .{ .header = "Output", .alignment = .right },
+        .{ .header = "Cache Create", .alignment = .right },
+        .{ .header = "Cache Read", .alignment = .right },
+        .{ .header = "Total Tokens", .alignment = .right },
+        .{ .header = "Cost (USD)", .alignment = .right },
+    };
+
+    const column_count = table_columns.len;
+
+    const Row = struct {
+        cells: [column_count][]const u8,
+    };
+
     pub fn writeSummary(
         writer: anytype,
         summaries: []const Model.DailySummary,
@@ -18,6 +41,57 @@ pub const Renderer = struct {
         };
         try stringify.write(payload);
         try writer.writeAll("\n");
+    }
+
+    pub fn writeTable(
+        writer: anytype,
+        allocator: std.mem.Allocator,
+        summaries: []const Model.DailySummary,
+        totals: *const Model.SummaryTotals,
+    ) !void {
+        if (summaries.len == 0) {
+            try writer.writeAll("No usage data found for the selected filters.\n");
+            return;
+        }
+
+        var arena_state = std.heap.ArenaAllocator.init(allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+
+        var widths: [column_count]usize = undefined;
+        inline for (table_columns, 0..) |column, idx| {
+            widths[idx] = column.header.len;
+        }
+
+        var rows = try arena.alloc(Row, summaries.len);
+        for (summaries, 0..) |*summary, idx| {
+            rows[idx] = try formatRow(arena, summary);
+            updateWidths(&widths, rows[idx].cells[0..]);
+        }
+
+        const totals_row = try formatTotalsRow(arena, totals);
+        updateWidths(&widths, totals_row.cells[0..]);
+
+        try writeRule(writer, widths[0..], '-');
+        var header_cells: [column_count][]const u8 = undefined;
+        inline for (table_columns, 0..) |column, idx| {
+            header_cells[idx] = column.header;
+        }
+        try writeRow(writer, widths[0..], header_cells[0..], table_columns[0..]);
+        try writeRule(writer, widths[0..], '=');
+        for (rows) |row| {
+            try writeRow(writer, widths[0..], row.cells[0..], table_columns[0..]);
+        }
+        try writeRule(writer, widths[0..], '-');
+        try writeRow(writer, widths[0..], totals_row.cells[0..], table_columns[0..]);
+        try writeRule(writer, widths[0..], '-');
+
+        if (totals.missing_pricing.items.len > 0) {
+            try writer.writeAll("\nMissing pricing entries:\n");
+            for (totals.missing_pricing.items) |model_name| {
+                try writer.print("  - {s}\n", .{model_name});
+            }
+        }
     }
 
     const Output = struct {
@@ -93,4 +167,162 @@ pub const Renderer = struct {
             try jw.endObject();
         }
     };
+
+    fn formatRow(allocator: std.mem.Allocator, summary: *const Model.DailySummary) !Row {
+        var cells: [column_count][]const u8 = undefined;
+        cells[0] = summary.display_date;
+        cells[1] = try formatModels(allocator, summary.models.items);
+        const input_tokens = effectiveInputTokens(summary.usage, summary.display_input_tokens);
+        cells[2] = try formatNumber(allocator, input_tokens);
+        cells[3] = try formatNumber(allocator, summary.usage.output_tokens);
+        cells[4] = try formatNumber(allocator, summary.usage.cache_creation_input_tokens);
+        cells[5] = try formatNumber(allocator, summary.usage.cached_input_tokens);
+        cells[6] = try formatNumber(allocator, summary.usage.total_tokens);
+        cells[7] = try formatCurrency(allocator, summary.cost_usd);
+        return Row{ .cells = cells };
+    }
+
+    fn formatTotalsRow(allocator: std.mem.Allocator, totals: *const Model.SummaryTotals) !Row {
+        var cells: [column_count][]const u8 = undefined;
+        cells[0] = "TOTAL";
+        cells[1] = "-";
+        const input_tokens = effectiveInputTokens(totals.usage, totals.display_input_tokens);
+        cells[2] = try formatNumber(allocator, input_tokens);
+        cells[3] = try formatNumber(allocator, totals.usage.output_tokens);
+        cells[4] = try formatNumber(allocator, totals.usage.cache_creation_input_tokens);
+        cells[5] = try formatNumber(allocator, totals.usage.cached_input_tokens);
+        cells[6] = try formatNumber(allocator, totals.usage.total_tokens);
+        cells[7] = try formatCurrency(allocator, totals.cost_usd);
+        return Row{ .cells = cells };
+    }
+
+    fn effectiveInputTokens(usage: Model.TokenUsage, display_override: u64) u64 {
+        if (display_override > 0) return display_override;
+        return usage.input_tokens;
+    }
+
+    fn updateWidths(widths: *[column_count]usize, cells: []const []const u8) void {
+        for (cells, 0..) |cell, idx| {
+            if (cell.len > widths[idx]) widths[idx] = cell.len;
+        }
+    }
+
+    fn writeRule(writer: anytype, widths: []const usize, ch: u8) !void {
+        try writer.writeAll("+");
+        for (widths) |width| {
+            var remaining: usize = width + 2;
+            while (remaining > 0) : (remaining -= 1) {
+                try writer.writeAll(&.{ch});
+            }
+            try writer.writeAll("+");
+        }
+        try writer.writeAll("\n");
+    }
+
+    fn writeRow(
+        writer: anytype,
+        widths: []const usize,
+        cells: []const []const u8,
+        columns: []const Column,
+    ) !void {
+        try writer.writeAll("|");
+        for (cells, 0..) |cell, idx| {
+            const width = widths[idx];
+            const alignment = columns[idx].alignment;
+            const padding = if (width > cell.len) width - cell.len else 0;
+            try writer.writeAll(" ");
+            switch (alignment) {
+                .left => {
+                    try writer.writeAll(cell);
+                    try writePadding(writer, ' ', padding);
+                },
+                .right => {
+                    try writePadding(writer, ' ', padding);
+                    try writer.writeAll(cell);
+                },
+            }
+            try writer.writeAll(" ");
+            try writer.writeAll("|");
+        }
+        try writer.writeAll("\n");
+    }
+
+    fn writePadding(writer: anytype, ch: u8, count: usize) !void {
+        var remaining = count;
+        while (remaining > 0) : (remaining -= 1) {
+            try writer.writeAll(&.{ch});
+        }
+    }
+
+    fn formatModels(
+        allocator: std.mem.Allocator,
+        models: []const Model.ModelSummary,
+    ) ![]const u8 {
+        if (models.len == 0) {
+            return allocator.dupe(u8, "-");
+        }
+        var buffer = std.ArrayList(u8).empty;
+        errdefer buffer.deinit(allocator);
+        const max_models = 3;
+        const display_count = if (models.len < max_models) models.len else max_models;
+        for (models[0..display_count], 0..) |model, idx| {
+            if (idx > 0) try buffer.appendSlice(allocator, ", ");
+            try buffer.appendSlice(allocator, model.name);
+        }
+        if (models.len > max_models) {
+            var suffix_buf: [32]u8 = undefined;
+            const suffix = try std.fmt.bufPrint(&suffix_buf, " (+{d} more)", .{models.len - max_models});
+            try buffer.appendSlice(allocator, suffix);
+        }
+        return buffer.toOwnedSlice(allocator);
+    }
+
+    fn formatNumber(allocator: std.mem.Allocator, value: u64) ![]const u8 {
+        var tmp: [32]u8 = undefined;
+        const digits = try std.fmt.bufPrint(&tmp, "{d}", .{value});
+        return try formatDigitsWithCommas(allocator, digits);
+    }
+
+    fn formatCurrency(allocator: std.mem.Allocator, amount: f64) ![]const u8 {
+        const negative = amount < 0;
+        const magnitude = @abs(amount);
+        var tmp: [64]u8 = undefined;
+        const raw = try std.fmt.bufPrint(&tmp, "{d:.2}", .{magnitude});
+        const dot_index = std.mem.indexOfScalar(u8, raw, '.') orelse raw.len;
+        const integer = raw[0..dot_index];
+        const decimals = if (dot_index < raw.len) raw[dot_index..] else "";
+        const comma_integer = try formatDigitsWithCommas(allocator, integer);
+        return try std.fmt.allocPrint(allocator, "{s}${s}{s}", .{
+            if (negative) "-" else "",
+            comma_integer,
+            decimals,
+        });
+    }
+
+    fn formatDigitsWithCommas(
+        allocator: std.mem.Allocator,
+        digits: []const u8,
+    ) ![]const u8 {
+        if (digits.len <= 3) {
+            return allocator.dupe(u8, digits);
+        }
+        const comma_count = (digits.len - 1) / 3;
+        const total_len = digits.len + comma_count;
+        var result = try allocator.alloc(u8, total_len);
+        var src_index = digits.len;
+        var dst_index = total_len;
+        var group_len: usize = 0;
+        while (src_index > 0) {
+            src_index -= 1;
+            dst_index -= 1;
+            result[dst_index] = digits[src_index];
+            group_len += 1;
+            if (group_len == 3 and src_index > 0) {
+                dst_index -= 1;
+                result[dst_index] = ',';
+                group_len = 0;
+            }
+        }
+        return result;
+    }
 };
