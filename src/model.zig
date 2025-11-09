@@ -712,12 +712,10 @@ fn lookupBySubstring(
         const backward = asciiContainsIgnoreCase(model_name, key);
         if (!forward and !backward) continue;
 
-        const score = if (forward and backward)
-            key.len + model_name.len
-        else if (forward)
-            model_name.len
+        const score = if (forward)
+            ratioScore(model_name.len, key.len)
         else
-            key.len;
+            ratioScore(key.len, model_name.len);
 
         if (score > best_score) {
             best_score = score;
@@ -767,6 +765,12 @@ fn asciiContainsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
         if (matched) return true;
     }
     return false;
+}
+
+fn ratioScore(numerator: usize, denominator: usize) usize {
+    if (denominator == 0) return 0;
+    const scaled = (@as(u128, numerator) * 100) / @as(u128, denominator);
+    return std.math.cast(usize, scaled) orelse std.math.maxInt(usize);
 }
 
 pub fn accumulateTotals(
