@@ -746,7 +746,7 @@ fn lookupBySubstring(
     var iterator = pricing_map.iterator();
     while (iterator.next()) |entry| {
         const key = entry.key_ptr.*;
-        if (asciiEqualIgnoreCase(key, lookup_name)) {
+        if (std.ascii.eqlIgnoreCase(key, lookup_name)) {
             cachePricingAlias(allocator, pricing_map, alias_name, entry.value_ptr.*) catch |err| {
                 std.log.warn("Failed to cache pricing alias for '{s}': {s}", .{ alias_name, @errorName(err) });
             };
@@ -787,14 +787,6 @@ fn cachePricingAlias(
     const duplicate = try allocator.dupe(u8, alias);
     errdefer allocator.free(duplicate);
     try pricing_map.put(duplicate, pricing);
-}
-
-fn asciiEqualIgnoreCase(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |lhs, rhs| {
-        if (std.ascii.toLower(lhs) != std.ascii.toLower(rhs)) return false;
-    }
-    return true;
 }
 
 fn asciiContainsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
