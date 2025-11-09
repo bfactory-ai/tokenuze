@@ -210,10 +210,7 @@ pub const Renderer = struct {
     fn writeRule(writer: anytype, widths: []const usize, ch: u8) !void {
         try writer.writeAll("+");
         for (widths) |width| {
-            var remaining: usize = width + 2;
-            while (remaining > 0) : (remaining -= 1) {
-                try writer.writeAll(&.{ch});
-            }
+            try writeCharNTimes(writer, ch, width + 2);
             try writer.writeAll("+");
         }
         try writer.writeAll("\n");
@@ -248,9 +245,19 @@ pub const Renderer = struct {
     }
 
     fn writePadding(writer: anytype, ch: u8, count: usize) !void {
+        if (count == 0) return;
+        try writeCharNTimes(writer, ch, count);
+    }
+
+    fn writeCharNTimes(writer: anytype, ch: u8, count: usize) !void {
+        if (count == 0) return;
+        var chunk_buf: [64]u8 = undefined;
+        @memset(chunk_buf[0..], ch);
         var remaining = count;
-        while (remaining > 0) : (remaining -= 1) {
-            try writer.writeAll(&.{ch});
+        while (remaining > 0) {
+            const take = if (remaining < chunk_buf.len) remaining else chunk_buf.len;
+            try writer.writeAll(chunk_buf[0..take]);
+            remaining -= take;
         }
     }
 
