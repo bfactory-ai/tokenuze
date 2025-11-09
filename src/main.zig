@@ -4,7 +4,9 @@ const tokenuze = @import("tokenuze");
 const cli = @import("cli.zig");
 const build_options = @import("build_options");
 
-var debug_allocator = std.heap.DebugAllocator(.{}){};
+pub const std_options: std.Options = tokenuze.std_options;
+
+var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
 pub fn main() !void {
     const native_os = builtin.target.os.tag;
@@ -27,6 +29,7 @@ pub fn main() !void {
         },
         else => return err,
     };
+    tokenuze.setLogLevel(options.log_level);
     if (options.show_help) {
         try cli.printHelp();
         return;

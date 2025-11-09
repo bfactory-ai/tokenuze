@@ -15,6 +15,7 @@ pub const CliOptions = struct {
     show_version: bool = false,
     providers: tokenuze.ProviderSelection = tokenuze.ProviderSelection.initAll(),
     upload: bool = false,
+    log_level: std.log.Level = .info,
 };
 
 const OptionId = enum {
@@ -23,6 +24,7 @@ const OptionId = enum {
     tz,
     pretty,
     table,
+    log_level,
     agent,
     upload,
     machine_id,
@@ -50,6 +52,7 @@ const option_specs = [_]OptionSpec{
     .{ .id = .tz, .long_name = "tz", .value_name = "<offset>", .desc = "Bucket dates in the provided timezone (default: {s})", .kind = .value },
     .{ .id = .pretty, .long_name = "pretty", .desc = "Expand JSON output for readability" },
     .{ .id = .table, .long_name = "table", .desc = "Render usage as a table (disables JSON output)" },
+    .{ .id = .log_level, .long_name = "log-level", .value_name = "LEVEL", .desc = "Control logging verbosity (error|warn|info|debug)", .kind = .value },
     .{ .id = .agent, .long_name = "agent", .value_name = "<name>", .desc = "Restrict collection to selected providers (available: {s})", .kind = .value },
     .{ .id = .upload, .long_name = "upload", .desc = "Upload Tokenuze JSON via DASHBOARD_API_* envs" },
     .{ .id = .machine_id, .long_name = "machine-id", .desc = "Print the machine id and exit" },
@@ -231,6 +234,10 @@ fn applyOption(
         .upload => options.upload = true,
         .pretty => options.filters.pretty_output = true,
         .table => options.filters.table_output = true,
+        .log_level => {
+            const value = args.next() orelse return missingValueError(spec.long_name);
+            options.log_level = try parseLogLevelArg(value);
+        },
         .since => {
             const value = args.next() orelse return missingValueError(spec.long_name);
             if (options.filters.since != null) return cliError("--since provided more than once", .{});
@@ -289,6 +296,11 @@ fn optionDescription(spec: *const OptionSpec, tz_label: []const u8, buffer: []u8
             "Bucket dates in the provided timezone (default: {s})",
             .{tz_label},
         ) catch spec.desc,
+        .log_level => std.fmt.bufPrint(
+            buffer,
+            "Control logging verbosity (error|warn|info|debug, default: info)",
+            .{},
+        ) catch spec.desc,
         else => spec.desc,
     };
 }
@@ -345,6 +357,29 @@ fn providerListDescription() []const u8 {
     return tokenuze.provider_list_description;
 }
 
+fn parseLogLevelArg(value: []const u8) CliError!std.log.Level {
+    const mapping = [_]struct {
+        name: []const u8,
+        level: std.log.Level,
+    }{
+        .{ .name = "error", .level = .err },
+        .{ .name = "err", .level = .err },
+        .{ .name = "warn", .level = .warn },
+        .{ .name = "warning", .level = .warn },
+        .{ .name = "info", .level = .info },
+        .{ .name = "debug", .level = .debug },
+    };
+
+    inline for (mapping) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.name, value)) return entry.level;
+    }
+
+    return cliError(
+        "invalid log level '{s}' (expected one of: error, warn, info, debug)",
+        .{value},
+    );
+}
+
 const TestIterator = struct {
     items: []const []const u8,
     index: usize = 0,
@@ -368,6 +403,7 @@ test "cli parses defaults with no args" {
     try testing.expect(!options.show_version);
     try testing.expect(!options.filters.pretty_output);
     try testing.expect(!options.machine_id);
+    try testing.expectEqual(std.log.Level.info, options.log_level);
 }
 
 test "cli parses filters and agent selection" {
@@ -389,6 +425,17 @@ test "cli parses filters and agent selection" {
     try testing.expectEqual(@as(i16, 2 * 60), options.filters.timezone_offset_minutes);
     const codex_index = tokenuze.findProviderIndex("codex") orelse unreachable;
     try testing.expect(options.providers.includesIndex(codex_index));
+}
+
+test "cli parses --log-level" {
+    var iter = TestIterator.init(&.{ "--log-level", "debug" });
+    const options = try parseOptionsIterator(&iter);
+    try testing.expectEqual(std.log.Level.debug, options.log_level);
+}
+
+test "cli rejects invalid --log-level" {
+    var iter = TestIterator.init(&.{ "--log-level", "chatty" });
+    try testing.expectError(CliError.InvalidUsage, parseOptionsIterator(&iter));
 }
 
 test "cli rejects duplicate --since" {
