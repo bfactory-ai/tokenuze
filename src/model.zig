@@ -821,12 +821,12 @@ fn createDateVariant(
     var search_index: usize = 0;
     while (search_index < source.len) : (search_index += 1) {
         const pos = std.mem.indexOfScalarPos(u8, source, search_index, from) orelse return null;
+        search_index = pos;
         if (pos + 9 <= source.len and isEightDigitBlock(source[pos + 1 .. pos + 9])) {
             var copy = try allocator.dupe(u8, source);
             copy[pos] = to;
             return copy;
         }
-        search_index = pos + 1;
     }
     return null;
 }
