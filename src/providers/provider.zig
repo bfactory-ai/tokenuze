@@ -514,6 +514,7 @@ const PricingFeedParser = struct {
     allocator: std.mem.Allocator,
     temp_allocator: std.mem.Allocator,
     pricing: *Model.PricingMap,
+    const AliasError = error{OutOfMemory};
 
     pub fn parse(self: *PricingFeedParser, reader: *std.json.Reader) !void {
         var alias_buffer: std.ArrayList(u8) = .empty;
@@ -600,18 +601,64 @@ const PricingFeedParser = struct {
         name: []const u8,
         entry: Model.ModelPricing,
         alias_buffer: *std.ArrayList(u8),
-    ) !void {
-        try self.putPricing(name, entry);
+    ) AliasError!void {
+        try self.registerPricingName(name, entry, alias_buffer);
+    }
 
-        if (std.mem.lastIndexOfScalar(u8, name, '/')) |idx| {
-            const alias = name[idx + 1 ..];
-            if (alias.len != 0 and !std.mem.eql(u8, alias, name)) {
-                try self.putPricing(alias, entry);
-                try self.insertAtDateAlias(alias, entry, alias_buffer);
-            }
-        }
+    fn registerPricingName(
+        self: *PricingFeedParser,
+        name: []const u8,
+        entry: Model.ModelPricing,
+        alias_buffer: *std.ArrayList(u8),
+    ) AliasError!void {
+        if (name.len == 0) return;
+        const inserted = try self.putPricing(name, entry);
+        if (!inserted) return;
 
         try self.insertAtDateAlias(name, entry, alias_buffer);
+        try self.registerDelimitedAlias(name, '/', entry, alias_buffer);
+        try self.registerAnthropicAlias(name, entry, alias_buffer);
+        try self.registerVersionlessAlias(name, entry, alias_buffer);
+    }
+
+    fn registerDelimitedAlias(
+        self: *PricingFeedParser,
+        name: []const u8,
+        delimiter: u8,
+        entry: Model.ModelPricing,
+        alias_buffer: *std.ArrayList(u8),
+    ) AliasError!void {
+        const idx = std.mem.lastIndexOfScalar(u8, name, delimiter) orelse return;
+        if (idx + 1 >= name.len) return;
+        const alias = name[idx + 1 ..];
+        if (alias.len == 0 or std.mem.eql(u8, alias, name)) return;
+        try self.registerPricingName(alias, entry, alias_buffer);
+    }
+
+    fn registerVersionlessAlias(
+        self: *PricingFeedParser,
+        name: []const u8,
+        entry: Model.ModelPricing,
+        alias_buffer: *std.ArrayList(u8),
+    ) AliasError!void {
+        const version_start = findVersionSuffix(name) orelse return;
+        if (version_start == 0) return;
+        const alias = name[0..version_start];
+        if (alias.len == 0 or std.mem.eql(u8, alias, name)) return;
+        try self.registerPricingName(alias, entry, alias_buffer);
+    }
+
+    fn registerAnthropicAlias(
+        self: *PricingFeedParser,
+        name: []const u8,
+        entry: Model.ModelPricing,
+        alias_buffer: *std.ArrayList(u8),
+    ) AliasError!void {
+        const prefix = "anthropic.";
+        if (!std.mem.startsWith(u8, name, prefix)) return;
+        const alias = name[prefix.len..];
+        if (alias.len == 0) return;
+        try self.registerPricingName(alias, entry, alias_buffer);
     }
 
     fn insertAtDateAlias(
@@ -619,7 +666,7 @@ const PricingFeedParser = struct {
         name: []const u8,
         entry: Model.ModelPricing,
         alias_buffer: *std.ArrayList(u8),
-    ) !void {
+    ) AliasError!void {
         const at_idx = std.mem.indexOfScalar(u8, name, '@') orelse return;
         const suffix = name[at_idx + 1 ..];
         if (!looksLikeDateSuffix(suffix)) return;
@@ -627,7 +674,7 @@ const PricingFeedParser = struct {
         alias_buffer.clearRetainingCapacity();
         try alias_buffer.print(self.temp_allocator, "{s}-{s}", .{ name[0..at_idx], suffix });
 
-        try self.putPricing(alias_buffer.items, entry);
+        _ = try self.putPricing(alias_buffer.items, entry);
     }
 
     fn looksLikeDateSuffix(suffix: []const u8) bool {
@@ -638,11 +685,24 @@ const PricingFeedParser = struct {
         return true;
     }
 
-    fn putPricing(self: *PricingFeedParser, key: []const u8, entry: Model.ModelPricing) !void {
-        if (self.pricing.get(key) != null) return;
+    fn findVersionSuffix(name: []const u8) ?usize {
+        const marker = std.mem.indexOf(u8, name, "-v") orelse return null;
+        var idx = marker + 2;
+        if (idx >= name.len or !std.ascii.isDigit(name[idx])) return null;
+        while (idx < name.len and std.ascii.isDigit(name[idx])) idx += 1;
+        if (idx < name.len and name[idx] == ':') {
+            idx += 1;
+            while (idx < name.len and std.ascii.isDigit(name[idx])) idx += 1;
+        }
+        return marker;
+    }
+
+    fn putPricing(self: *PricingFeedParser, key: []const u8, entry: Model.ModelPricing) AliasError!bool {
+        if (self.pricing.get(key) != null) return false;
         const copied_name = try self.allocator.dupe(u8, key);
         errdefer self.allocator.free(copied_name);
         try self.pricing.put(copied_name, entry);
+        return true;
     }
 };
 
@@ -983,7 +1043,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             }
         }
 
-        test "pricing parser stores alias for slash-separated model names" {
+        test "pricing parser stores alias for slash- and dot-separated model names" {
             const allocator = std.testing.allocator;
             var pricing = Model.PricingMap.init(allocator);
             defer Model.deinitPricingMap(&pricing, allocator);
@@ -1003,9 +1063,13 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 .output_cost_per_m = 1,
             };
             try parser.insertPricingEntries("gemini/gemini-flash-latest", pricing_entry, &alias_buffer);
+            try parser.insertPricingEntries("anthropic.claude-opus-4-1-20250805-v1:0", pricing_entry, &alias_buffer);
 
             try std.testing.expect(pricing.get("gemini/gemini-flash-latest") != null);
             try std.testing.expect(pricing.get("gemini-flash-latest") != null);
+            try std.testing.expect(pricing.get("anthropic.claude-opus-4-1-20250805-v1:0") != null);
+            try std.testing.expect(pricing.get("claude-opus-4-1-20250805-v1:0") != null);
+            try std.testing.expect(pricing.get("claude-opus-4-1-20250805") != null);
         }
 
         test "usage descriptors map and accumulate token fields" {
