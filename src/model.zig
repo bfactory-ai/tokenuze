@@ -667,25 +667,63 @@ fn resolveModelPricing(
     pricing_map: *PricingMap,
     model_name: []const u8,
 ) ?ModelPricing {
-    if (pricing_map.get(model_name)) |rate| return rate;
+    if (resolveWithName(allocator, pricing_map, model_name, model_name)) |rate|
+        return rate;
 
-    if (lookupWithPrefixes(allocator, pricing_map, model_name)) |rate| return rate;
+    var variants: [2]?[]u8 = .{ null, null };
+    var variant_count: usize = 0;
 
-    return lookupBySubstring(allocator, pricing_map, model_name);
+    variants[variant_count] = createDateVariant(allocator, model_name, '-', '@') catch null;
+    if (variants[variant_count]) |_| variant_count += 1;
+    variants[variant_count] = createDateVariant(allocator, model_name, '@', '-') catch null;
+    if (variants[variant_count]) |_| variant_count += 1;
+
+    defer {
+        for (variants) |maybe_variant| {
+            if (maybe_variant) |variant| allocator.free(variant);
+        }
+    }
+
+    for (variants[0..variant_count]) |maybe_variant| {
+        if (maybe_variant) |variant| {
+            if (resolveWithName(allocator, pricing_map, variant, model_name)) |rate|
+                return rate;
+        }
+    }
+
+    return null;
+}
+
+fn resolveWithName(
+    allocator: std.mem.Allocator,
+    pricing_map: *PricingMap,
+    lookup_name: []const u8,
+    alias_name: []const u8,
+) ?ModelPricing {
+    if (pricing_map.get(lookup_name)) |rate| {
+        if (!std.mem.eql(u8, alias_name, lookup_name)) {
+            cachePricingAlias(allocator, pricing_map, alias_name, rate) catch {};
+        }
+        return rate;
+    }
+
+    if (lookupWithPrefixes(allocator, pricing_map, lookup_name, alias_name)) |rate| return rate;
+    return lookupBySubstring(allocator, pricing_map, lookup_name, alias_name);
 }
 
 fn lookupWithPrefixes(
     allocator: std.mem.Allocator,
     pricing_map: *PricingMap,
-    model_name: []const u8,
+    lookup_name: []const u8,
+    alias_name: []const u8,
 ) ?ModelPricing {
     for (pricing_candidate_prefixes) |prefix| {
-        const candidate = std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, model_name }) catch {
+        const candidate = std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, lookup_name }) catch {
             continue;
         };
         defer allocator.free(candidate);
         if (pricing_map.get(candidate)) |rate| {
-            cachePricingAlias(allocator, pricing_map, model_name, rate) catch {};
+            cachePricingAlias(allocator, pricing_map, alias_name, rate) catch {};
             return rate;
         }
     }
@@ -695,7 +733,8 @@ fn lookupWithPrefixes(
 fn lookupBySubstring(
     allocator: std.mem.Allocator,
     pricing_map: *PricingMap,
-    model_name: []const u8,
+    lookup_name: []const u8,
+    alias_name: []const u8,
 ) ?ModelPricing {
     var best_rate: ?ModelPricing = null;
     var best_score: usize = 0;
@@ -703,19 +742,19 @@ fn lookupBySubstring(
     var iterator = pricing_map.iterator();
     while (iterator.next()) |entry| {
         const key = entry.key_ptr.*;
-        if (asciiEqualIgnoreCase(key, model_name)) {
-            cachePricingAlias(allocator, pricing_map, model_name, entry.value_ptr.*) catch {};
+        if (asciiEqualIgnoreCase(key, lookup_name)) {
+            cachePricingAlias(allocator, pricing_map, alias_name, entry.value_ptr.*) catch {};
             return entry.value_ptr.*;
         }
 
-        const forward = asciiContainsIgnoreCase(key, model_name);
-        const backward = asciiContainsIgnoreCase(model_name, key);
+        const forward = asciiContainsIgnoreCase(key, lookup_name);
+        const backward = asciiContainsIgnoreCase(lookup_name, key);
         if (!forward and !backward) continue;
 
         const score = if (forward)
-            ratioScore(model_name.len, key.len)
+            ratioScore(lookup_name.len, key.len)
         else
-            ratioScore(key.len, model_name.len);
+            ratioScore(key.len, lookup_name.len);
 
         if (score > best_score) {
             best_score = score;
@@ -724,7 +763,7 @@ fn lookupBySubstring(
     }
 
     if (best_rate) |rate| {
-        cachePricingAlias(allocator, pricing_map, model_name, rate) catch {};
+        cachePricingAlias(allocator, pricing_map, alias_name, rate) catch {};
         return rate;
     }
     return null;
@@ -771,6 +810,33 @@ fn ratioScore(numerator: usize, denominator: usize) usize {
     if (denominator == 0) return 0;
     const scaled = (@as(u128, numerator) * 100) / @as(u128, denominator);
     return std.math.cast(usize, scaled) orelse std.math.maxInt(usize);
+}
+
+fn createDateVariant(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    from: u8,
+    to: u8,
+) !?[]u8 {
+    var search_index: usize = 0;
+    while (search_index < source.len) : (search_index += 1) {
+        const pos = std.mem.indexOfScalarPos(u8, source, search_index, from) orelse return null;
+        if (pos + 9 <= source.len and isEightDigitBlock(source[pos + 1 .. pos + 9])) {
+            var copy = try allocator.dupe(u8, source);
+            copy[pos] = to;
+            return copy;
+        }
+        search_index = pos + 1;
+    }
+    return null;
+}
+
+fn isEightDigitBlock(block: []const u8) bool {
+    if (block.len != 8) return false;
+    for (block) |ch| {
+        if (!std.ascii.isDigit(ch)) return false;
+    }
+    return true;
 }
 
 pub fn accumulateTotals(
@@ -921,4 +987,22 @@ test "resolveModelPricing falls back to substring match" {
     const rate = resolveModelPricing(allocator, &map, "claude-sonnet-4-5-20250929") orelse unreachable;
     try std.testing.expectEqual(@as(f64, 2), rate.cache_creation_cost_per_m);
     try std.testing.expect(map.get("claude-sonnet-4-5-20250929") != null);
+}
+
+test "resolveModelPricing normalizes date separators" {
+    const allocator = std.testing.allocator;
+    var map = PricingMap.init(allocator);
+    defer deinitPricingMap(&map, allocator);
+
+    const key = try allocator.dupe(u8, "claude-3-opus@20240229");
+    try map.put(key, .{
+        .input_cost_per_m = 3,
+        .cache_creation_cost_per_m = 3,
+        .cached_input_cost_per_m = 3,
+        .output_cost_per_m = 3,
+    });
+
+    const rate = resolveModelPricing(allocator, &map, "claude-3-opus-20240229") orelse unreachable;
+    try std.testing.expectEqual(@as(f64, 3), rate.output_cost_per_m);
+    try std.testing.expect(map.get("claude-3-opus-20240229") != null);
 }
