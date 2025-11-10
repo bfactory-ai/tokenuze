@@ -441,6 +441,7 @@ pub const RemotePricingStats = struct {
     models_added: usize = 0,
     elapsed_ms: f64 = 0,
     failure: ?anyerror = null,
+    satisfied: bool = false,
 };
 
 pub fn loadRemotePricing(
@@ -449,7 +450,10 @@ pub fn loadRemotePricing(
     pricing: *Model.PricingMap,
 ) !RemotePricingStats {
     var stats: RemotePricingStats = .{};
-    if (remote_pricing_loaded.load(.acquire)) return stats;
+    if (remote_pricing_loaded.load(.acquire)) {
+        stats.satisfied = true;
+        return stats;
+    }
 
     stats.attempted = true;
     var fetch_timer = try std.time.Timer.start();
@@ -463,6 +467,7 @@ pub fn loadRemotePricing(
         stats.failure = err;
     } else {
         stats.models_added = pricing.count() - before_fetch;
+        stats.satisfied = true;
         remote_pricing_loaded.store(true, .release);
     }
     return stats;

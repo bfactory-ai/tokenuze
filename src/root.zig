@@ -89,9 +89,6 @@ pub const providers = [_]ProviderSpec{
     },
 };
 
-const provider_name_list = initProviderNames();
-pub const provider_list_description = initProviderListDescription();
-
 const SummaryResult = struct {
     builder: Model.SummaryBuilder,
     totals: Model.SummaryTotals,
@@ -114,30 +111,6 @@ pub const UploadReport = struct {
         self.* = undefined;
     }
 };
-
-fn initProviderNames() [providers.len][]const u8 {
-    var names: [providers.len][]const u8 = undefined;
-    inline for (providers, 0..) |prov, idx| {
-        names[idx] = prov.name;
-    }
-    return names;
-}
-
-pub fn providerNames() []const []const u8 {
-    return provider_name_list[0..];
-}
-
-fn initProviderListDescription() []const u8 {
-    comptime var combined: []const u8 = "";
-    inline for (providers, 0..) |prov, idx| {
-        if (idx == 0) {
-            combined = prov.name;
-        } else {
-            combined = std.fmt.comptimePrint("{s}, {s}", .{ combined, prov.name });
-        }
-    }
-    return combined;
-}
 
 const provider_count = providers.len;
 comptime {
@@ -261,60 +234,50 @@ fn logRunStart(filters: DateFilters, selection: ProviderSelection, enable_progre
 }
 
 fn describeSelectedProviders(selection: ProviderSelection, buffer: []u8) ProviderSelectionSummary {
-    var cursor: usize = 0;
-    var first = true;
+    var selected: [provider_count][]const u8 = undefined;
     var count: usize = 0;
-
-    const Append = struct {
-        fn run(buf: []u8, cursor_ptr: *usize, text: []const u8) void {
-            if (cursor_ptr.* >= buf.len) return;
-            const remaining = buf.len - cursor_ptr.*;
-            const to_copy = @min(text.len, remaining);
-            std.mem.copyForwards(u8, buf[cursor_ptr.* .. cursor_ptr.* + to_copy], text[0..to_copy]);
-            cursor_ptr.* += to_copy;
-        }
-    };
-
     for (providers, 0..) |prov, idx| {
         if (!selection.includesIndex(idx)) continue;
+        selected[count] = prov.name;
         count += 1;
-        if (!first) {
-            Append.run(buffer, &cursor, ", ");
-        }
-        Append.run(buffer, &cursor, prov.name);
-        first = false;
     }
 
-    const written = buffer[0..cursor];
-    return .{
-        .names = if (written.len == 0) "(none)" else written,
-        .count = count,
+    if (count == 0) {
+        return .{ .names = "(none)", .count = 0 };
+    }
+
+    var fba = std.heap.FixedBufferAllocator.init(buffer);
+    const joined = std.mem.join(fba.allocator(), ", ", selected[0..count]) catch {
+        const placeholder = "(truncated)";
+        if (buffer.len == 0) return .{ .names = "", .count = count };
+        const copy_len = @min(placeholder.len, buffer.len);
+        std.mem.copyForwards(u8, buffer[0..copy_len], placeholder[0..copy_len]);
+        return .{ .names = buffer[0..copy_len], .count = count };
     };
+
+    return .{ .names = joined, .count = count };
 }
 
-const PhaseTracker = struct {
-    timer: std.time.Timer,
-    node: ?std.Progress.Node,
+pub fn providerListDescription(buffer: []u8) []const u8 {
+    return describeSelectedProviders(ProviderSelection.initAll(), buffer).names;
+}
 
-    pub fn start(parent: ?*std.Progress.Node, label: []const u8, total_items: usize) !PhaseTracker {
-        return .{
-            .timer = try std.time.Timer.start(),
-            .node = if (parent) |root| std.Progress.Node.start(root.*, label, total_items) else null,
-        };
+fn startProgressNode(parent: ?*std.Progress.Node, label: []const u8, total_items: usize) std.Progress.Node {
+    if (parent) |root| {
+        return std.Progress.Node.start(root.*, label, total_items);
     }
+    return std.Progress.Node.none;
+}
 
-    pub fn progress(self: *PhaseTracker) ?std.Progress.Node {
-        return self.node;
+fn finishProgressNode(node: std.Progress.Node) void {
+    if (node.index != .none) {
+        std.Progress.Node.end(node);
     }
+}
 
-    pub fn elapsedMs(self: *PhaseTracker) f64 {
-        return nsToMs(self.timer.read());
-    }
-
-    pub fn finish(self: *PhaseTracker) void {
-        if (self.node) |node| std.Progress.Node.end(node);
-    }
-};
+fn progressHandle(node: std.Progress.Node) ?std.Progress.Node {
+    return if (node.index == .none) null else node;
+}
 
 fn nsToMs(ns: u64) f64 {
     return @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(std.time.ns_per_ms));
@@ -371,6 +334,49 @@ fn collectSummaryInternal(
         try loadPricing(allocator, temp_allocator, selection, &pricing_map, progress_parent);
     }
 
+    try collectSelectedProviders(
+        allocator,
+        temp_allocator,
+        filters,
+        selection,
+        &summary_builder,
+        &pricing_map,
+        progress_parent,
+    );
+
+    var summaries = summary_builder.items();
+    if (summaries.len == 0) {
+        std.log.info("no events to process; total runtime {d:.2}ms", .{nsToMs(total_timer.read())});
+        if (enable_progress) std.Progress.setStatus(.success);
+        return SummaryResult{ .builder = summary_builder, .totals = totals };
+    }
+
+    try finalizeSummaries(
+        allocator,
+        progress_parent,
+        summaries,
+        &pricing_map,
+        &totals,
+        session_recorder,
+    );
+
+    std.log.info("phase.total runtime {d:.2}ms", .{nsToMs(total_timer.read())});
+    if (enable_progress) std.Progress.setStatus(.success);
+
+    return SummaryResult{ .builder = summary_builder, .totals = totals };
+}
+
+fn collectSelectedProviders(
+    allocator: std.mem.Allocator,
+    temp_allocator: std.mem.Allocator,
+    filters: DateFilters,
+    selection: ProviderSelection,
+    summary_builder: *Model.SummaryBuilder,
+    pricing_map: *Model.PricingMap,
+    progress_parent: ?*std.Progress.Node,
+) !void {
+    if (selection.isEmpty()) return;
+
     for (providers, 0..) |prov, idx| {
         if (!selection.includesIndex(idx)) continue;
         const before_events = summary_builder.eventCount();
@@ -379,11 +385,12 @@ fn collectSummaryInternal(
             .{ prov.phase_label, before_events },
         );
         const stats = blk: {
-            var collect_phase = try PhaseTracker.start(progress_parent, prov.phase_label, 0);
-            defer collect_phase.finish();
-            try prov.collect(allocator, temp_allocator, &summary_builder, filters, &pricing_map, collect_phase.progress());
+            var collect_timer = try std.time.Timer.start();
+            const phase_node = startProgressNode(progress_parent, prov.phase_label, 0);
+            defer finishProgressNode(phase_node);
+            try prov.collect(allocator, temp_allocator, summary_builder, filters, pricing_map, progressHandle(phase_node));
             break :blk .{
-                .elapsed = collect_phase.elapsedMs(),
+                .elapsed = nsToMs(collect_timer.read()),
                 .events_added = summary_builder.eventCount() - before_events,
                 .total_events = summary_builder.eventCount(),
             };
@@ -398,40 +405,46 @@ fn collectSummaryInternal(
             },
         );
     }
+}
 
-    var summaries = summary_builder.items();
-    if (summaries.len == 0) {
-        std.log.info("no events to process; total runtime {d:.2}ms", .{nsToMs(total_timer.read())});
-        if (enable_progress) std.Progress.setStatus(.success);
-        return SummaryResult{ .builder = summary_builder, .totals = totals };
-    }
-
+fn finalizeSummaries(
+    allocator: std.mem.Allocator,
+    progress_parent: ?*std.Progress.Node,
+    summaries: []DailySummary,
+    pricing_map: *Model.PricingMap,
+    totals: *SummaryTotals,
+    session_recorder: ?*Model.SessionRecorder,
+) !void {
     var missing_set = std.StringHashMap(u8).init(allocator);
     defer missing_set.deinit();
 
     const pricing_elapsed = blk: {
-        var pricing_phase = try PhaseTracker.start(progress_parent, "apply pricing", summaries.len);
-        defer pricing_phase.finish();
+        var pricing_timer = try std.time.Timer.start();
+        const pricing_node = startProgressNode(progress_parent, "apply pricing", summaries.len);
+        defer finishProgressNode(pricing_node);
+        const pricing_progress = progressHandle(pricing_node);
         for (summaries) |*summary| {
-            Model.applyPricing(allocator, summary, &pricing_map, &missing_set);
+            Model.applyPricing(allocator, summary, pricing_map, &missing_set);
             std.sort.pdq(ModelSummary, summary.models.items, {}, modelLessThan);
-            if (pricing_phase.progress()) |node| std.Progress.Node.completeOne(node);
+            if (pricing_progress) |node| std.Progress.Node.completeOne(node);
         }
-        break :blk pricing_phase.elapsedMs();
+        break :blk nsToMs(pricing_timer.read());
     };
     std.log.info(
         "phase.apply_pricing completed in {d:.2}ms (days={d})",
         .{ pricing_elapsed, summaries.len },
     );
+
     if (session_recorder) |recorder| {
-        recorder.applyPricing(&pricing_map);
+        recorder.applyPricing(pricing_map);
     }
 
     const sort_elapsed = blk: {
-        var sort_days_phase = try PhaseTracker.start(progress_parent, "sort days", 0);
-        defer sort_days_phase.finish();
+        var sort_timer = try std.time.Timer.start();
+        const sort_node = startProgressNode(progress_parent, "sort days", 0);
+        defer finishProgressNode(sort_node);
         std.sort.pdq(DailySummary, summaries, {}, summaryLessThan);
-        break :blk sort_days_phase.elapsedMs();
+        break :blk nsToMs(sort_timer.read());
     };
     std.log.info(
         "phase.sort_days completed in {d:.2}ms (days={d})",
@@ -439,21 +452,17 @@ fn collectSummaryInternal(
     );
 
     const totals_elapsed = blk: {
-        var totals_phase = try PhaseTracker.start(progress_parent, "totals", 0);
-        defer totals_phase.finish();
-        Model.accumulateTotals(summaries, &totals);
+        var totals_timer = try std.time.Timer.start();
+        const totals_node = startProgressNode(progress_parent, "totals", 0);
+        defer finishProgressNode(totals_node);
+        Model.accumulateTotals(summaries, totals);
         try Model.collectMissingModels(allocator, &missing_set, &totals.missing_pricing);
-        break :blk totals_phase.elapsedMs();
+        break :blk nsToMs(totals_timer.read());
     };
     std.log.info(
         "phase.totals completed in {d:.2}ms (missing_pricing={d})",
         .{ totals_elapsed, totals.missing_pricing.items.len },
     );
-
-    std.log.info("phase.total runtime {d:.2}ms", .{nsToMs(total_timer.read())});
-    if (enable_progress) std.Progress.setStatus(.success);
-
-    return SummaryResult{ .builder = summary_builder, .totals = totals };
 }
 
 fn loadPricing(
@@ -463,8 +472,9 @@ fn loadPricing(
     pricing: *Model.PricingMap,
     progress_parent: ?*std.Progress.Node,
 ) !void {
-    var pricing_phase = try PhaseTracker.start(progress_parent, "load pricing", 0);
-    defer pricing_phase.finish();
+    var pricing_timer = try std.time.Timer.start();
+    const pricing_node = startProgressNode(progress_parent, "load pricing", 0);
+    defer finishProgressNode(pricing_node);
     std.log.debug("pricing.load begin (selection_mask=0x{x})", .{selection.mask});
 
     const before_models = pricing.count();
@@ -485,25 +495,29 @@ fn loadPricing(
         std.log.info("pricing.remote_fetch skipped (already loaded)", .{});
     }
 
-    var fallback_timer = try std.time.Timer.start();
-    for (providers, 0..) |prov, idx| {
-        if (!selection.includesIndex(idx)) continue;
-        std.log.debug(
-            "pricing.{s}.fallback start (models={d})",
-            .{ prov.name, pricing.count() },
+    if (!remote_stats.satisfied) {
+        var fallback_timer = try std.time.Timer.start();
+        for (providers, 0..) |prov, idx| {
+            if (!selection.includesIndex(idx)) continue;
+            std.log.debug(
+                "pricing.{s}.fallback start (models={d})",
+                .{ prov.name, pricing.count() },
+            );
+            try prov.load_pricing(allocator, temp_allocator, pricing);
+        }
+        const fallback_elapsed = nsToMs(fallback_timer.read());
+        const fallback_added = pricing.count() - (before_models + remote_stats.models_added);
+        std.log.info(
+            "pricing.fallback ensured in {d:.2}ms (models += {d})",
+            .{ fallback_elapsed, fallback_added },
         );
-        try prov.load_pricing(allocator, temp_allocator, pricing);
+    } else {
+        std.log.info("pricing.fallback skipped (remote pricing satisfied)", .{});
     }
-    const fallback_elapsed = nsToMs(fallback_timer.read());
-    const fallback_added = pricing.count() - (before_models + remote_stats.models_added);
-    std.log.info(
-        "pricing.fallback ensured in {d:.2}ms (models += {d})",
-        .{ fallback_elapsed, fallback_added },
-    );
 
     std.log.info(
         "phase.load_pricing completed in {d:.2}ms (models={d}, models_added={d})",
-        .{ pricing_phase.elapsedMs(), pricing.count(), pricing.count() - before_models },
+        .{ nsToMs(pricing_timer.read()), pricing.count(), pricing.count() - before_models },
     );
 }
 
