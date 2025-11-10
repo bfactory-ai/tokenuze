@@ -519,21 +519,25 @@ fn loadPricing(
         std.log.info("pricing.remote_fetch skipped (already loaded)", .{});
     }
 
-    var fallback_timer = try std.time.Timer.start();
-    for (providers, 0..) |prov, idx| {
-        if (!selection.includesIndex(idx)) continue;
-        std.log.debug(
-            "pricing.{s}.fallback start (models={d})",
-            .{ prov.name, pricing.count() },
+    if (!remote_stats.satisfied) {
+        var fallback_timer = try std.time.Timer.start();
+        for (providers, 0..) |prov, idx| {
+            if (!selection.includesIndex(idx)) continue;
+            std.log.debug(
+                "pricing.{s}.fallback start (models={d})",
+                .{ prov.name, pricing.count() },
+            );
+            try prov.load_pricing(allocator, temp_allocator, pricing);
+        }
+        const fallback_elapsed = nsToMs(fallback_timer.read());
+        const fallback_added = pricing.count() - (before_models + remote_stats.models_added);
+        std.log.info(
+            "pricing.fallback ensured in {d:.2}ms (models += {d})",
+            .{ fallback_elapsed, fallback_added },
         );
-        try prov.load_pricing(allocator, temp_allocator, pricing);
+    } else {
+        std.log.info("pricing.fallback skipped (remote pricing satisfied)", .{});
     }
-    const fallback_elapsed = nsToMs(fallback_timer.read());
-    const fallback_added = pricing.count() - (before_models + remote_stats.models_added);
-    std.log.info(
-        "pricing.fallback ensured in {d:.2}ms (models += {d})",
-        .{ fallback_elapsed, fallback_added },
-    );
 
     std.log.info(
         "phase.load_pricing completed in {d:.2}ms (models={d}, models_added={d})",
