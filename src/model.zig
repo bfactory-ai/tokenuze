@@ -189,7 +189,7 @@ pub fn parseTokenNumber(slice: []const u8) u64 {
 }
 
 pub fn writeUsageJsonFields(
-    jw: anytype,
+    jw: *std.json.Stringify,
     usage: TokenUsage,
     display_input_override: ?u64,
 ) !void {
@@ -386,7 +386,7 @@ pub const SessionRecorder = struct {
         return buffer.toOwnedSlice(allocator);
     }
 
-    fn writeSessionsArray(self: *const SessionRecorder, allocator: std.mem.Allocator, jw: anytype) !void {
+    fn writeSessionsArray(self: *const SessionRecorder, allocator: std.mem.Allocator, jw: *std.json.Stringify) !void {
         var pointers = try self.collectSessionPointers(allocator);
         defer pointers.deinit(allocator);
         try jw.beginArray();
@@ -414,7 +414,7 @@ pub const SessionRecorder = struct {
         return std.mem.lessThan(u8, lhs.session_id, rhs.session_id);
     }
 
-    fn writeUsageObject(jw: anytype, usage: TokenUsage, cost: f64) !void {
+    fn writeUsageObject(jw: *std.json.Stringify, usage: TokenUsage, cost: f64) !void {
         try jw.beginObject();
         try writeUsageJsonFields(jw, usage, null);
         try jw.objectField("costUSD");
@@ -528,7 +528,7 @@ pub const SessionRecorder = struct {
             });
         }
 
-        fn writeJson(self: *const SessionEntry, jw: anytype) !void {
+        fn writeJson(self: *const SessionEntry, jw: *std.json.Stringify) !void {
             try jw.beginObject();
             try jw.objectField("sessionId");
             try jw.write(self.session_id);

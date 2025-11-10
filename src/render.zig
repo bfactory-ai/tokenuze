@@ -151,7 +151,7 @@ pub const Renderer = struct {
     const ModelMapView = struct {
         models: []const Model.ModelSummary,
 
-        pub fn jsonStringify(self: ModelMapView, jw: anytype) !void {
+        pub fn jsonStringify(self: ModelMapView, jw: *std.json.Stringify) !void {
             try jw.beginObject();
             for (self.models) |*model| {
                 try jw.objectField(model.name);
