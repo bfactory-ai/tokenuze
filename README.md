@@ -23,8 +23,8 @@ tokenuze --help
 - `--since YYYYMMDD` limits processing to events on/after the specified local date.
 - `--until YYYYMMDD` caps the range; must be >= `--since` when both are present.
 - `--tz <offset>` buckets events using a fixed offset like `+09`, `-05:30`, or `UTC` (default: system timezone).
-- `--table` renders the daily summaries as a ccusage-style table (default behavior; overrides `--json`).
-- `--json` renders daily summaries as JSON instead of the table (respects `--pretty`).
+- `--table` renders the daily summaries as a ccusage-style table (default behavior; if you also pass `--json`, whichever flag appears last on the command line decides the format).
+- `--json` renders daily summaries as JSON instead of the table (respects `--pretty`; last `--table`/`--json` flag wins when both are present).
 - `--pretty` enables indented JSON output (handy when reading the payload manually).
 - `--log-level <error|warn|info|debug>` controls how chatty Tokenuze's logs are (defaults to `info`).
 - `--agent <codex|gemini|claude>` restricts processing to the specified provider; repeat the flag to include multiple (defaults to all providers).
