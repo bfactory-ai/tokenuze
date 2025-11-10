@@ -447,6 +447,20 @@ test "cli parses --json" {
     try testing.expect(options.output_explicit);
 }
 
+test "cli --json overrides --table" {
+    var iter = TestIterator.init(&.{ "--table", "--json" });
+    const options = try parseOptionsIterator(&iter);
+    try testing.expect(options.filters.output_format == .json);
+    try testing.expect(options.output_explicit);
+}
+
+test "cli --table overrides --json" {
+    var iter = TestIterator.init(&.{ "--json", "--table" });
+    const options = try parseOptionsIterator(&iter);
+    try testing.expect(options.filters.output_format == .table);
+    try testing.expect(options.output_explicit);
+}
+
 test "cli parses --log-level" {
     var iter = TestIterator.init(&.{ "--log-level", "debug" });
     const options = try parseOptionsIterator(&iter);
