@@ -1,13 +1,13 @@
 # Tokenuze
 
-Tokenuze is a Zig CLI that summarizes OpenAI Codex, Gemini, and Claude session usage. It scans `~/.codex/sessions`, `~/.gemini/tmp`, and `~/.claude/projects`, aggregates token counts per day and per model, and reports pricing using either the live LiteLLM pricing manifest or local fallbacks. Output is emitted as compact JSON, making it easy to feed into dashboards or further scripts.
+Tokenuze is a Zig CLI that summarizes OpenAI Codex, Gemini, and Claude session usage. It scans `~/.codex/sessions`, `~/.gemini/tmp`, and `~/.claude/projects`, aggregates token counts per day and per model, and reports pricing using either the live LiteLLM pricing manifest or local fallbacks. Output is rendered as a ccusage-style table by default (or compact JSON with `--json`), making it easy to feed into dashboards or further scripts.
 
 ## Requirements
 - Zig 0.16.0-dev.1225+bf9082518 (for building from source)
-- Access to Codex session logs at `~/.codex/sessions`
+- Optional: Access to Codex session logs at `~/.codex/sessions`
 - Optional: access to Gemini session logs at `~/.gemini/tmp`
 - Optional: access to Claude session logs at `~/.claude/projects`
-- Optional: network access to fetch remote pricing
+- Optional: network access to fetch remote pricing / uploading stats
 
 ## Quick Start
 ```bash
@@ -23,12 +23,13 @@ tokenuze --help
 - `--since YYYYMMDD` limits processing to events on/after the specified local date.
 - `--until YYYYMMDD` caps the range; must be >= `--since` when both are present.
 - `--tz <offset>` buckets events using a fixed offset like `+09`, `-05:30`, or `UTC` (default: system timezone).
+- `--table` renders the daily summaries as a ccusage-style table (default behavior; if you also pass `--json`, whichever flag appears last on the command line decides the format).
+- `--json` renders daily summaries as JSON instead of the table (respects `--pretty`; last `--table`/`--json` flag wins when both are present).
 - `--pretty` enables indented JSON output (handy when reading the payload manually).
-- `--table` renders the daily summaries as a ccusage-style table instead of JSON (overrides `--pretty`).
 - `--log-level <error|warn|info|debug>` controls how chatty Tokenuze's logs are (defaults to `info`).
 - `--agent <codex|gemini|claude>` restricts processing to the specified provider; repeat the flag to include multiple (defaults to all providers).
 - `--machine-id` prints the cached/generated machine identifier and exits (no summaries).
-- `--upload` captures Tokenuze's JSON summary for the selected providers and POSTs it to `/api/usage/report` using `DASHBOARD_API_URL`/`DASHBOARD_API_KEY`.
+- `--upload` captures Tokenuze's JSON summary for the selected providers and POSTs it to `/api/usage/report` using `DASHBOARD_API_URL`/`DASHBOARD_API_KEY`. Pass `--table` or `--json` alongside `--upload` to display a local report after the upload completes.
 
 ## What It Produces
 Tokenuze prints a JSON payload shaped like:

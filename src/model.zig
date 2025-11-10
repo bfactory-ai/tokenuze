@@ -5,11 +5,16 @@ const timeutil = @import("time.zig");
 pub const MILLION = 1_000_000.0;
 pub const PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 
+pub const OutputFormat = enum {
+    table,
+    json,
+};
+
 pub const DateFilters = struct {
     since: ?[10]u8 = null,
     until: ?[10]u8 = null,
     pretty_output: bool = false,
-    table_output: bool = false,
+    output_format: OutputFormat = .table,
     timezone_offset_minutes: i16 = @intCast(timeutil.DEFAULT_TIMEZONE_OFFSET_MINUTES),
 };
 
@@ -184,7 +189,7 @@ pub fn parseTokenNumber(slice: []const u8) u64 {
 }
 
 pub fn writeUsageJsonFields(
-    jw: anytype,
+    jw: *std.json.Stringify,
     usage: TokenUsage,
     display_input_override: ?u64,
 ) !void {
@@ -381,7 +386,7 @@ pub const SessionRecorder = struct {
         return buffer.toOwnedSlice(allocator);
     }
 
-    fn writeSessionsArray(self: *const SessionRecorder, allocator: std.mem.Allocator, jw: anytype) !void {
+    fn writeSessionsArray(self: *const SessionRecorder, allocator: std.mem.Allocator, jw: *std.json.Stringify) !void {
         var pointers = try self.collectSessionPointers(allocator);
         defer pointers.deinit(allocator);
         try jw.beginArray();
@@ -409,7 +414,7 @@ pub const SessionRecorder = struct {
         return std.mem.lessThan(u8, lhs.session_id, rhs.session_id);
     }
 
-    fn writeUsageObject(jw: anytype, usage: TokenUsage, cost: f64) !void {
+    fn writeUsageObject(jw: *std.json.Stringify, usage: TokenUsage, cost: f64) !void {
         try jw.beginObject();
         try writeUsageJsonFields(jw, usage, null);
         try jw.objectField("costUSD");
@@ -523,7 +528,7 @@ pub const SessionRecorder = struct {
             });
         }
 
-        fn writeJson(self: *const SessionEntry, jw: anytype) !void {
+        fn writeJson(self: *const SessionEntry, jw: *std.json.Stringify) !void {
             try jw.beginObject();
             try jw.objectField("sessionId");
             try jw.write(self.session_id);
