@@ -63,6 +63,8 @@ const option_specs = [_]OptionSpec{
     .{ .id = .help, .long_name = "help", .short_name = 'h', .desc = "Show this message and exit" },
 };
 
+var provider_desc_buffer: [256]u8 = undefined;
+
 pub fn parseOptions(allocator: std.mem.Allocator) CliError!CliOptions {
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
@@ -364,7 +366,7 @@ fn cliError(comptime fmt: []const u8, args: anytype) CliError {
 }
 
 fn providerListDescription() []const u8 {
-    return tokenuze.provider_list_description;
+    return tokenuze.providerListDescription(&provider_desc_buffer);
 }
 
 fn parseLogLevelArg(value: []const u8) CliError!std.log.Level {
@@ -441,7 +443,7 @@ test "cli parses filters and agent selection" {
 }
 
 test "cli parses --json" {
-    var iter = TestIterator.init(&.{ "--json" });
+    var iter = TestIterator.init(&.{"--json"});
     const options = try parseOptionsIterator(&iter);
     try testing.expect(options.filters.output_format == .json);
     try testing.expect(options.output_explicit);
