@@ -261,35 +261,28 @@ fn logRunStart(filters: DateFilters, selection: ProviderSelection, enable_progre
 }
 
 fn describeSelectedProviders(selection: ProviderSelection, buffer: []u8) ProviderSelectionSummary {
-    var cursor: usize = 0;
-    var first = true;
+    var selected: [provider_count][]const u8 = undefined;
     var count: usize = 0;
-
-    const Append = struct {
-        fn run(buf: []u8, cursor_ptr: *usize, text: []const u8) void {
-            if (cursor_ptr.* >= buf.len) return;
-            const remaining = buf.len - cursor_ptr.*;
-            const to_copy = @min(text.len, remaining);
-            std.mem.copyForwards(u8, buf[cursor_ptr.* .. cursor_ptr.* + to_copy], text[0..to_copy]);
-            cursor_ptr.* += to_copy;
-        }
-    };
-
     for (providers, 0..) |prov, idx| {
         if (!selection.includesIndex(idx)) continue;
+        selected[count] = prov.name;
         count += 1;
-        if (!first) {
-            Append.run(buffer, &cursor, ", ");
-        }
-        Append.run(buffer, &cursor, prov.name);
-        first = false;
     }
 
-    const written = buffer[0..cursor];
-    return .{
-        .names = if (written.len == 0) "(none)" else written,
-        .count = count,
+    if (count == 0) {
+        return .{ .names = "(none)", .count = 0 };
+    }
+
+    var fba = std.heap.FixedBufferAllocator.init(buffer);
+    const joined = std.mem.join(fba.allocator(), ", ", selected[0..count]) catch {
+        const placeholder = "(truncated)";
+        if (buffer.len == 0) return .{ .names = "(none)", .count = count };
+        const copy_len = @min(placeholder.len, buffer.len);
+        std.mem.copyForwards(u8, buffer[0..copy_len], placeholder[0..copy_len]);
+        return .{ .names = buffer[0..copy_len], .count = count };
     };
+
+    return .{ .names = joined, .count = count };
 }
 
 const PhaseTracker = struct {
