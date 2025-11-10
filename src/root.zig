@@ -36,6 +36,7 @@ pub fn logFn(
 
 pub const DateFilters = Model.DateFilters;
 pub const ParseDateError = Model.ParseDateError;
+pub const OutputFormat = Model.OutputFormat;
 pub const ModelSummary = Model.ModelSummary;
 pub const DailySummary = Model.DailySummary;
 pub const SummaryTotals = Model.SummaryTotals;
@@ -191,10 +192,9 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters, selection: Provid
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const out_writer = &stdout_writer.interface;
-    if (filters.table_output) {
-        try render.Renderer.writeTable(out_writer, allocator, summary.builder.items(), &summary.totals);
-    } else {
-        try render.Renderer.writeSummary(out_writer, summary.builder.items(), &summary.totals, filters.pretty_output);
+    switch (filters.output_format) {
+        .table => try render.Renderer.writeTable(out_writer, allocator, summary.builder.items(), &summary.totals),
+        .json => try render.Renderer.writeJson(out_writer, summary.builder.items(), &summary.totals, filters.pretty_output),
     }
     try flushOutput(out_writer);
 }
@@ -524,6 +524,6 @@ fn renderSummaryBuffer(
     var buffer = std.ArrayList(u8).empty;
     defer buffer.deinit(allocator);
     var writer_state = io_util.ArrayWriter.init(&buffer, allocator);
-    try render.Renderer.writeSummary(writer_state.writer(), summaries, totals, pretty);
+    try render.Renderer.writeJson(writer_state.writer(), summaries, totals, pretty);
     return buffer.toOwnedSlice(allocator);
 }

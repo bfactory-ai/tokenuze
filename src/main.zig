@@ -78,7 +78,9 @@ pub fn main() !void {
             uploads.items,
             options.filters.timezone_offset_minutes,
         );
-        return;
+        if (!options.output_explicit) {
+            return;
+        }
     }
     try tokenuze.run(allocator, options.filters, options.providers);
 }

@@ -5,11 +5,16 @@ const timeutil = @import("time.zig");
 pub const MILLION = 1_000_000.0;
 pub const PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 
+pub const OutputFormat = enum {
+    table,
+    json,
+};
+
 pub const DateFilters = struct {
     since: ?[10]u8 = null,
     until: ?[10]u8 = null,
     pretty_output: bool = false,
-    table_output: bool = false,
+    output_format: OutputFormat = .table,
     timezone_offset_minutes: i16 = @intCast(timeutil.DEFAULT_TIMEZONE_OFFSET_MINUTES),
 };
 

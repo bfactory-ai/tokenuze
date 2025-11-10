@@ -26,8 +26,8 @@ pub const Renderer = struct {
         cells: [column_count][]const u8,
     };
 
-    pub fn writeSummary(
-        writer: anytype,
+    pub fn writeJson(
+        writer: *std.Io.Writer,
         summaries: []const Model.DailySummary,
         totals: *const Model.SummaryTotals,
         pretty: bool,
@@ -45,7 +45,7 @@ pub const Renderer = struct {
     }
 
     pub fn writeTable(
-        writer: anytype,
+        writer: *std.Io.Writer,
         allocator: std.mem.Allocator,
         summaries: []const Model.DailySummary,
         totals: *const Model.SummaryTotals,
@@ -103,7 +103,7 @@ pub const Renderer = struct {
     const SummaryArray = struct {
         items: []const Model.DailySummary,
 
-        pub fn jsonStringify(self: SummaryArray, jw: anytype) !void {
+        pub fn jsonStringify(self: SummaryArray, jw: *std.json.Stringify) !void {
             try jw.beginArray();
             for (self.items) |*summary| {
                 try jw.write(DailySummaryView{ .summary = summary });
@@ -115,7 +115,7 @@ pub const Renderer = struct {
     const TotalsView = struct {
         totals: *const Model.SummaryTotals,
 
-        pub fn jsonStringify(self: TotalsView, jw: anytype) !void {
+        pub fn jsonStringify(self: TotalsView, jw: *std.json.Stringify) !void {
             const totals = self.totals;
             try jw.beginObject();
             try Model.writeUsageJsonFields(jw, totals.usage, totals.display_input_tokens);
@@ -130,7 +130,7 @@ pub const Renderer = struct {
     const DailySummaryView = struct {
         summary: *const Model.DailySummary,
 
-        pub fn jsonStringify(self: DailySummaryView, jw: anytype) !void {
+        pub fn jsonStringify(self: DailySummaryView, jw: *std.json.Stringify) !void {
             const summary = self.summary;
             try jw.beginObject();
             try jw.objectField("date");

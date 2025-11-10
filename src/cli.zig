@@ -15,6 +15,7 @@ pub const CliOptions = struct {
     show_version: bool = false,
     providers: tokenuze.ProviderSelection = tokenuze.ProviderSelection.initAll(),
     upload: bool = false,
+    output_explicit: bool = false,
     log_level: std.log.Level = .info,
 };
 
@@ -24,6 +25,7 @@ const OptionId = enum {
     tz,
     pretty,
     table,
+    json,
     log_level,
     agent,
     upload,
@@ -51,7 +53,8 @@ const option_specs = [_]OptionSpec{
     .{ .id = .until, .long_name = "until", .value_name = "YYYYMMDD", .desc = "Only include events on/before the date", .kind = .value },
     .{ .id = .tz, .long_name = "tz", .value_name = "<offset>", .desc = "Bucket dates in the provided timezone (default: {s})", .kind = .value },
     .{ .id = .pretty, .long_name = "pretty", .desc = "Expand JSON output for readability" },
-    .{ .id = .table, .long_name = "table", .desc = "Render usage as a table (disables JSON output)" },
+    .{ .id = .table, .long_name = "table", .desc = "Render usage as a table (default behavior)" },
+    .{ .id = .json, .long_name = "json", .desc = "Render usage as JSON instead of the table" },
     .{ .id = .log_level, .long_name = "log-level", .value_name = "LEVEL", .desc = "Control logging verbosity (error|warn|info|debug)", .kind = .value },
     .{ .id = .agent, .long_name = "agent", .value_name = "<name>", .desc = "Restrict collection to selected providers (available: {s})", .kind = .value },
     .{ .id = .upload, .long_name = "upload", .desc = "Upload Tokenuze JSON via DASHBOARD_API_* envs" },
@@ -233,7 +236,14 @@ fn applyOption(
     switch (spec.id) {
         .upload => options.upload = true,
         .pretty => options.filters.pretty_output = true,
-        .table => options.filters.table_output = true,
+        .table => {
+            options.filters.output_format = .table;
+            options.output_explicit = true;
+        },
+        .json => {
+            options.filters.output_format = .json;
+            options.output_explicit = true;
+        },
         .log_level => {
             const value = args.next() orelse return missingValueError(spec.long_name);
             options.log_level = try parseLogLevelArg(value);
@@ -403,6 +413,8 @@ test "cli parses defaults with no args" {
     try testing.expect(!options.show_version);
     try testing.expect(!options.filters.pretty_output);
     try testing.expect(!options.machine_id);
+    try testing.expect(options.filters.output_format == .table);
+    try testing.expect(!options.output_explicit);
     try testing.expectEqual(std.log.Level.info, options.log_level);
 }
 
@@ -421,10 +433,18 @@ test "cli parses filters and agent selection" {
     try testing.expectEqual(expected_since, options.filters.since.?);
     try testing.expectEqual(expected_until, options.filters.until.?);
     try testing.expect(options.filters.pretty_output);
-    try testing.expect(options.filters.table_output);
+    try testing.expect(options.filters.output_format == .table);
+    try testing.expect(options.output_explicit);
     try testing.expectEqual(@as(i16, 2 * 60), options.filters.timezone_offset_minutes);
     const codex_index = tokenuze.findProviderIndex("codex") orelse unreachable;
     try testing.expect(options.providers.includesIndex(codex_index));
+}
+
+test "cli parses --json" {
+    var iter = TestIterator.init(&.{ "--json" });
+    const options = try parseOptionsIterator(&iter);
+    try testing.expect(options.filters.output_format == .json);
+    try testing.expect(options.output_explicit);
 }
 
 test "cli parses --log-level" {
