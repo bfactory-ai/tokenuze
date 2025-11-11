@@ -2,6 +2,7 @@ const std = @import("std");
 const Model = @import("../model.zig");
 const timeutil = @import("../time.zig");
 const io_util = @import("../io_util.zig");
+const http_client = @import("../http_client.zig");
 
 pub const FallbackPricingEntry = struct {
     name: []const u8,
@@ -434,29 +435,20 @@ fn fetchRemotePricing(
     temp_allocator: std.mem.Allocator,
     pricing: *Model.PricingMap,
 ) !void {
-    var io_single = std.Io.Threaded.init_single_threaded;
-    defer io_single.deinit();
+    var response = try http_client.request(
+        temp_allocator,
+        temp_allocator,
+        .{
+            .method = .GET,
+            .url = Model.PRICING_URL,
+            .force_identity_encoding = true,
+            .response_limit = std.Io.Limit.limited(4 * 1024 * 1024),
+        },
+    );
+    defer response.deinit();
 
-    var client = std.http.Client{
-        .allocator = temp_allocator,
-        .io = io_single.io(),
-    };
-    defer client.deinit();
-
-    const uri = try std.Uri.parse(Model.PRICING_URL);
-    var request = try client.request(.GET, uri, .{
-        .headers = .{ .accept_encoding = .{ .override = "identity" } },
-    });
-    defer request.deinit();
-    try request.sendBodiless();
-
-    var response = try request.receiveHead(&.{});
-    if (response.head.status.class() != .success) return error.HttpError;
-
-    var transfer_buffer: [4096]u8 = undefined;
-    const body_reader = response.reader(&transfer_buffer);
-
-    var json_reader = std.json.Reader.init(temp_allocator, body_reader);
+    var slice_reader = std.Io.Reader.fixed(response.body);
+    var json_reader = std.json.Reader.init(temp_allocator, &slice_reader);
     defer json_reader.deinit();
 
     var parser = PricingFeedParser{
