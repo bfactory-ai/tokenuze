@@ -94,14 +94,21 @@ fn parseGeminiSessionFile(
     var previous_totals: ?RawUsage = null;
     var model_state = ModelState{};
 
-    const file_data = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.limited(32 * 1024 * 1024)) catch |err| {
-        ctx.logWarning(file_path, "failed to read gemini session file", err);
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        ctx.logWarning(file_path, "failed to open gemini session file", err);
         return;
     };
-    defer allocator.free(file_data);
+    defer file.close();
 
-    var slice_reader = std.Io.Reader.fixed(file_data);
-    var json_reader = std.json.Reader.init(allocator, &slice_reader);
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const io = io_single.io();
+
+    var reader_buffer: [64 * 1024]u8 = undefined;
+    var file_reader = file.readerStreaming(io, reader_buffer[0..]);
+    const stream_reader = &file_reader.interface;
+
+    var json_reader = std.json.Reader.init(allocator, stream_reader);
     defer json_reader.deinit();
 
     if ((try json_reader.next()) != .object_begin) return;
@@ -194,11 +201,11 @@ fn parseGeminiMessageField(
     key: []const u8,
 ) !void {
     if (std.mem.eql(u8, key, "timestamp")) {
-        provider.replaceJsonToken(&message.timestamp, allocator, try provider.jsonReadStringToken(allocator, reader));
+        try provider.replaceJsonTokenOwned(&message.timestamp, allocator, try provider.jsonReadStringToken(allocator, reader));
         return;
     }
     if (std.mem.eql(u8, key, "model")) {
-        provider.replaceJsonToken(&message.model, allocator, try provider.jsonReadStringToken(allocator, reader));
+        try provider.replaceJsonTokenOwned(&message.model, allocator, try provider.jsonReadStringToken(allocator, reader));
         return;
     }
     if (std.mem.eql(u8, key, "tokens")) {

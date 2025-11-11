@@ -644,6 +644,22 @@ pub fn replaceJsonToken(
     dest.* = token;
 }
 
+pub fn replaceJsonTokenOwned(
+    dest: *?JsonTokenSlice,
+    allocator: std.mem.Allocator,
+    token: JsonTokenSlice,
+) !void {
+    var to_store = token;
+    switch (to_store) {
+        .borrowed => |slice| {
+            const dup = try allocator.dupe(u8, slice);
+            to_store = .{ .owned = dup };
+        },
+        .owned => {},
+    }
+    replaceJsonToken(dest, allocator, to_store);
+}
+
 pub fn captureModelToken(
     dest: *?JsonTokenSlice,
     allocator: std.mem.Allocator,
