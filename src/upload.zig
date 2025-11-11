@@ -49,6 +49,7 @@ pub fn run(
     defer allocator.free(payload);
 
     std.log.info("Uploading summary to {s}...", .{endpoint});
+    var upload_timer: std.time.Timer = try .start();
     var response = sendPayload(allocator, endpoint, env.api_key, payload) catch |err| {
         std.log.err("Connection failed. Is the server running at {s}? ({s})", .{ env.api_url, @errorName(err) });
         return err;
@@ -56,6 +57,7 @@ pub fn run(
     defer response.deinit();
 
     try handleResponse(response);
+    std.log.info("Usage reported successfully in {d:.2}ms", .{timeutil.nsToMs(upload_timer.read())});
 }
 
 const EnvConfig = struct {
@@ -173,9 +175,7 @@ fn trimTrailingSlash(value: []const u8) []const u8 {
 
 fn handleResponse(response: HttpResponse) UploadError!void {
     switch (response.status) {
-        .ok => {
-            std.log.info("Usage reported successfully", .{});
-        },
+        .ok => {},
         .unauthorized => {
             std.log.err("Authentication failed: Invalid or inactive API key", .{});
             return UploadError.Unauthorized;
