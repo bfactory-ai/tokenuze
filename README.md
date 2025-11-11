@@ -58,7 +58,7 @@ Provider integrations live in `src/providers/`. To add a new LLM vendor:
 1. Start with `provider.makeProvider` (see `claude.zig`/`gemini.zig`) to leverage shared utilities and reduce boilerplate.
 2. Implement a parser that emits `Model.TokenUsageEvent` rows; use the shared helpers where possible:
    - `ParseContext.captureModel/requireModel` keep per-session model state consistent.
-   - `UsageFieldDescriptor` + `parseUsageObject` let you describe raw token counters declaratively instead of hand-writing math.
-   - `readJsonValue`, `timestampFromValue`, and `overrideSessionLabelFromValue` cover the common JSON load + timestamp/session-id plumbing so providers focus on their unique bits.
+   - `UsageFieldDescriptor` + `jsonParseUsageObjectWithDescriptors` let you describe raw token counters declaratively instead of hand-writing math.
+   - `streamJsonLines`/`parseJsonLine`, `timestampFromSlice`, and `overrideSessionLabelFromSlice` cover the common JSON streaming + timestamp/session-id plumbing so providers focus on their unique bits.
 3. Expose any provider-specific pricing loader and register the provider in `src/root.zig` so CLI option parsing recognizes it.
 4. Add fixtures under `fixtures/<provider>/` plus unit tests near the parser to lock in expected token deltas.

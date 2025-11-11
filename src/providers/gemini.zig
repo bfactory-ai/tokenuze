@@ -112,7 +112,7 @@ fn parseGeminiSessionFile(
         file_path,
         .{
             .max_bytes = 128 * 1024 * 1024,
-            .delimiter = 0,
+            .mode = .document,
             .trim_lines = false,
             .skip_empty = false,
             .open_error_message = "failed to open gemini session file",
@@ -192,36 +192,19 @@ fn parseGeminiMessagesArray(
     allocator: std.mem.Allocator,
     reader: *std.json.Reader,
 ) !void {
-    const peek = try reader.peekNextTokenType();
-    if (peek == .null) {
-        _ = try reader.next();
-        return;
-    }
-    if (peek != .array_begin) {
-        try reader.skipValue();
-        return;
-    }
+    try provider.jsonWalkArrayObjects(allocator, reader, state, parseGeminiMessageObject);
+}
 
-    _ = try reader.next();
-
-    while (true) {
-        switch (try reader.peekNextTokenType()) {
-            .array_end => {
-                _ = try reader.next();
-                return;
-            },
-            .object_begin => {
-                _ = try reader.next();
-                var message = GeminiMessage{};
-                defer message.deinit(allocator);
-                try provider.jsonWalkObject(allocator, reader, &message, parseGeminiMessageField);
-                try emitGeminiMessage(state, &message);
-            },
-            else => {
-                try reader.skipValue();
-            },
-        }
-    }
+fn parseGeminiMessageObject(
+    state: *GeminiParseState,
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    _: usize,
+) !void {
+    var message = GeminiMessage{};
+    defer message.deinit(allocator);
+    try provider.jsonWalkObject(allocator, reader, &message, parseGeminiMessageField);
+    try emitGeminiMessage(state, &message);
 }
 
 fn parseGeminiMessageField(
@@ -231,11 +214,11 @@ fn parseGeminiMessageField(
     key: []const u8,
 ) !void {
     if (std.mem.eql(u8, key, "timestamp")) {
-        try provider.replaceJsonTokenOwned(&message.timestamp, allocator, try provider.jsonReadStringToken(allocator, reader));
+        try provider.replaceJsonToken(&message.timestamp, allocator, try provider.jsonReadStringToken(allocator, reader));
         return;
     }
     if (std.mem.eql(u8, key, "model")) {
-        try provider.replaceJsonTokenOwned(&message.model, allocator, try provider.jsonReadStringToken(allocator, reader));
+        try provider.replaceJsonToken(&message.model, allocator, try provider.jsonReadStringToken(allocator, reader));
         return;
     }
     if (std.mem.eql(u8, key, "tokens")) {

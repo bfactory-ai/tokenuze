@@ -158,19 +158,6 @@ pub fn resolveModel(
     return null;
 }
 
-pub fn jsonValueToU64(maybe_value: ?std.json.Value) u64 {
-    const value = maybe_value orelse return 0;
-    return switch (value) {
-        .integer => |val| if (val >= 0) @as(u64, @intCast(val)) else 0,
-        .float => |val| if (val >= 0)
-            std.math.lossyCast(u64, @floor(val))
-        else
-            0,
-        .number_string => |slice| Model.parseTokenNumber(slice),
-        else => 0,
-    };
-}
-
 pub const TimestampInfo = struct {
     text: []const u8,
     local_iso_date: [10]u8,
@@ -189,37 +176,6 @@ pub fn timestampFromSlice(
     return .{ .text = duplicate, .local_iso_date = iso_date };
 }
 
-pub fn timestampFromValue(
-    allocator: std.mem.Allocator,
-    timezone_offset_minutes: i32,
-    maybe_value: ?std.json.Value,
-) !?TimestampInfo {
-    const value = maybe_value orelse return null;
-    return switch (value) {
-        .string => |slice| try timestampFromSlice(allocator, slice, timezone_offset_minutes),
-        else => null,
-    };
-}
-
-pub fn overrideSessionLabelFromValue(
-    allocator: std.mem.Allocator,
-    session_label: *[]const u8,
-    overridden: ?*bool,
-    maybe_value: ?std.json.Value,
-) void {
-    if (overridden) |flag| if (flag.*) return;
-    const value = maybe_value orelse return;
-    const slice = switch (value) {
-        .string => |str| str,
-        else => return,
-    };
-    const duplicate = duplicateNonEmpty(allocator, slice) catch null;
-    if (duplicate) |dup| {
-        session_label.* = dup;
-        if (overridden) |flag| flag.* = true;
-    }
-}
-
 pub fn overrideSessionLabelFromSlice(
     allocator: std.mem.Allocator,
     session_label: *[]const u8,
@@ -234,31 +190,6 @@ pub fn overrideSessionLabelFromSlice(
     }
 }
 
-pub const JsonFileOptions = struct {
-    limit: std.Io.Limit = std.Io.Limit.limited(32 * 1024 * 1024),
-    read_error_message: []const u8 = "failed to read session file",
-    parse_error_message: []const u8 = "failed to parse session file",
-};
-
-pub fn readJsonValue(
-    allocator: std.mem.Allocator,
-    ctx: *const ParseContext,
-    file_path: []const u8,
-    options: JsonFileOptions,
-) ?std.json.Parsed(std.json.Value) {
-    const file_data = std.fs.cwd().readFileAlloc(file_path, allocator, options.limit) catch |err| {
-        ctx.logWarning(file_path, options.read_error_message, err);
-        return null;
-    };
-    defer allocator.free(file_data);
-
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, file_data, .{}) catch |err| {
-        ctx.logWarning(file_path, options.parse_error_message, err);
-        return null;
-    };
-    return parsed;
-}
-
 pub const UsageValueMode = enum {
     set,
     add,
@@ -270,26 +201,22 @@ pub const UsageFieldDescriptor = struct {
     mode: UsageValueMode = .set,
 };
 
-pub fn parseUsageObject(
-    usage_obj: std.json.ObjectMap,
+const UsageDescriptorContext = struct {
+    accumulator: *Model.UsageAccumulator,
     descriptors: []const UsageFieldDescriptor,
-) Model.RawTokenUsage {
-    var accumulator = Model.UsageAccumulator{};
-    for (descriptors) |descriptor| {
-        const value = jsonValueToU64(usage_obj.get(descriptor.key));
-        switch (descriptor.mode) {
-            .set => accumulator.applyField(descriptor.field, value),
-            .add => accumulator.addField(descriptor.field, value),
-        }
-    }
-    return accumulator.finalize();
-}
+};
+
+pub const JsonlStreamMode = enum {
+    lines,
+    document,
+};
 
 pub const JsonlStreamOptions = struct {
     max_bytes: usize = 128 * 1024 * 1024,
     delimiter: u8 = '\n',
     trim_lines: bool = true,
     skip_empty: bool = true,
+    mode: JsonlStreamMode = .lines,
     open_error_message: []const u8 = "unable to open session file",
     read_error_message: []const u8 = "error while reading session stream",
     advance_error_message: []const u8 = "error while advancing session stream",
@@ -308,6 +235,19 @@ pub fn streamJsonLines(
         return;
     };
     defer file.close();
+
+    if (options.mode == .document) {
+        try streamJsonDocumentInternal(
+            allocator,
+            ctx,
+            file_path,
+            options,
+            file,
+            handler_context,
+            handler,
+        );
+        return;
+    }
 
     var io_single = std.Io.Threaded.init_single_threaded;
     defer io_single.deinit();
@@ -368,6 +308,43 @@ pub fn streamJsonLines(
         streamed_total += discard_result;
         if (streamed_total > options.max_bytes) return;
     }
+}
+
+fn streamJsonDocumentInternal(
+    allocator: std.mem.Allocator,
+    ctx: *const ParseContext,
+    file_path: []const u8,
+    options: JsonlStreamOptions,
+    file: std.fs.File,
+    handler_context: anytype,
+    comptime handler: fn (@TypeOf(handler_context), []const u8, usize) anyerror!void,
+) !void {
+    var document: std.ArrayList(u8) = .empty;
+    defer document.deinit(allocator);
+
+    var buffer: [64 * 1024]u8 = undefined;
+    var streamed_total: usize = 0;
+
+    while (true) {
+        const read_len = file.read(buffer[0..]) catch |err| {
+            ctx.logWarning(file_path, options.read_error_message, err);
+            return;
+        };
+        if (read_len == 0) break;
+        streamed_total += read_len;
+        if (streamed_total > options.max_bytes) return;
+        try document.appendSlice(allocator, buffer[0..read_len]);
+    }
+
+    var line_slice: []const u8 = document.items;
+    if (options.trim_lines) {
+        line_slice = std.mem.trim(u8, line_slice, " \t\r\n");
+    }
+    if (options.skip_empty and line_slice.len == 0) {
+        return;
+    }
+
+    try handler(handler_context, line_slice, 1);
 }
 
 pub const ParseSessionFn = *const fn (
@@ -639,15 +616,6 @@ pub fn replaceJsonToken(
     dest: *?JsonTokenSlice,
     allocator: std.mem.Allocator,
     token: JsonTokenSlice,
-) void {
-    if (dest.*) |*existing| existing.deinit(allocator);
-    dest.* = token;
-}
-
-pub fn replaceJsonTokenOwned(
-    dest: *?JsonTokenSlice,
-    allocator: std.mem.Allocator,
-    token: JsonTokenSlice,
 ) !void {
     var to_store = token;
     switch (to_store) {
@@ -657,7 +625,8 @@ pub fn replaceJsonTokenOwned(
         },
         .owned => {},
     }
-    replaceJsonToken(dest, allocator, to_store);
+    if (dest.*) |*existing| existing.deinit(allocator);
+    dest.* = to_store;
 }
 
 pub fn captureModelToken(
@@ -747,34 +716,11 @@ pub fn jsonParseUsageObject(
     allocator: std.mem.Allocator,
     reader: *std.json.Reader,
 ) !?Model.RawTokenUsage {
-    const peek = try reader.peekNextTokenType();
-    if (peek == .null) {
-        _ = try reader.next();
-        return null;
-    }
-    if (peek != .object_begin) {
-        try reader.skipValue();
-        return null;
-    }
-
-    _ = try reader.next();
-
     var accumulator = Model.UsageAccumulator{};
-
-    while (true) {
-        switch (try reader.peekNextTokenType()) {
-            .object_end => {
-                _ = try reader.next();
-                return accumulator.finalize();
-            },
-            .string => {
-                var key = try JsonTokenSlice.fromString(allocator, reader);
-                defer key.deinit(allocator);
-                try jsonParseUsageField(allocator, reader, key.view(), &accumulator);
-            },
-            else => return error.UnexpectedToken,
-        }
+    if (!try jsonParseUsageObjectCommon(allocator, reader, &accumulator, jsonParseUsageField)) {
+        return null;
     }
+    return accumulator.finalize();
 }
 
 pub fn jsonParseUsageObjectWithDescriptors(
@@ -782,30 +728,45 @@ pub fn jsonParseUsageObjectWithDescriptors(
     reader: *std.json.Reader,
     descriptors: []const UsageFieldDescriptor,
 ) !?Model.RawTokenUsage {
+    var accumulator = Model.UsageAccumulator{};
+    var context = UsageDescriptorContext{
+        .accumulator = &accumulator,
+        .descriptors = descriptors,
+    };
+    if (!try jsonParseUsageObjectCommon(allocator, reader, &context, jsonApplyDescriptorField)) {
+        return null;
+    }
+    return accumulator.finalize();
+}
+
+fn jsonParseUsageObjectCommon(
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    context: anytype,
+    comptime handler: fn (@TypeOf(context), std.mem.Allocator, *std.json.Reader, []const u8) anyerror!void,
+) !bool {
     const peek = try reader.peekNextTokenType();
     if (peek == .null) {
         _ = try reader.next();
-        return null;
+        return false;
     }
     if (peek != .object_begin) {
         try reader.skipValue();
-        return null;
+        return false;
     }
 
     _ = try reader.next();
-
-    var accumulator = Model.UsageAccumulator{};
 
     while (true) {
         switch (try reader.peekNextTokenType()) {
             .object_end => {
                 _ = try reader.next();
-                return accumulator.finalize();
+                return true;
             },
             .string => {
                 var key = try JsonTokenSlice.fromString(allocator, reader);
                 defer key.deinit(allocator);
-                try jsonApplyDescriptorField(allocator, reader, key.view(), descriptors, &accumulator);
+                try handler(context, allocator, reader, key.view());
             },
             else => return error.UnexpectedToken,
         }
@@ -813,10 +774,10 @@ pub fn jsonParseUsageObjectWithDescriptors(
 }
 
 fn jsonParseUsageField(
+    accumulator: *Model.UsageAccumulator,
     allocator: std.mem.Allocator,
     reader: *std.json.Reader,
     key: []const u8,
-    accumulator: *Model.UsageAccumulator,
 ) !void {
     const field = Model.usageFieldForKey(key) orelse {
         try reader.skipValue();
@@ -827,17 +788,16 @@ fn jsonParseUsageField(
 }
 
 fn jsonApplyDescriptorField(
+    context: *UsageDescriptorContext,
     allocator: std.mem.Allocator,
     reader: *std.json.Reader,
     key: []const u8,
-    descriptors: []const UsageFieldDescriptor,
-    accumulator: *Model.UsageAccumulator,
 ) !void {
     var matched = false;
     var value_parsed = false;
     var parsed_value: u64 = 0;
 
-    for (descriptors) |descriptor| {
+    for (context.descriptors) |descriptor| {
         if (!std.mem.eql(u8, descriptor.key, key)) continue;
         matched = true;
         if (!value_parsed) {
@@ -845,8 +805,8 @@ fn jsonApplyDescriptorField(
             value_parsed = true;
         }
         switch (descriptor.mode) {
-            .set => accumulator.applyField(descriptor.field, parsed_value),
-            .add => accumulator.addField(descriptor.field, parsed_value),
+            .set => context.accumulator.applyField(descriptor.field, parsed_value),
+            .add => context.accumulator.addField(descriptor.field, parsed_value),
         }
     }
 
@@ -873,6 +833,41 @@ pub fn jsonWalkObject(
                 try handler(context, allocator, reader, key.view());
             },
             else => return error.UnexpectedToken,
+        }
+    }
+}
+
+pub fn jsonWalkArrayObjects(
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    context: anytype,
+    comptime handler: fn (@TypeOf(context), std.mem.Allocator, *std.json.Reader, usize) anyerror!void,
+) !void {
+    const peek = try reader.peekNextTokenType();
+    if (peek == .null) {
+        _ = try reader.next();
+        return;
+    }
+    if (peek != .array_begin) {
+        try reader.skipValue();
+        return;
+    }
+
+    _ = try reader.next();
+    var index: usize = 0;
+
+    while (true) {
+        switch (try reader.peekNextTokenType()) {
+            .array_end => {
+                _ = try reader.next();
+                return;
+            },
+            .object_begin => {
+                _ = try reader.next();
+                try handler(context, allocator, reader, index);
+                index += 1;
+            },
+            else => try reader.skipValue(),
         }
     }
 }
@@ -1233,7 +1228,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
         }
 
         test "usage descriptors map and accumulate token fields" {
-            const allocator = std.testing.allocator;
+            const test_allocator = std.testing.allocator;
             const json_src =
                 \\{
                 \\  "input_direct": 150,
@@ -1244,12 +1239,9 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 \\}
             ;
 
-            var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_src, .{});
-            defer parsed.deinit();
-            const usage_obj = switch (parsed.value) {
-                .object => |obj| obj,
-                else => unreachable,
-            };
+            var slice_reader = std.Io.Reader.fixed(json_src);
+            var json_reader = std.json.Reader.init(test_allocator, &slice_reader);
+            defer json_reader.deinit();
 
             const descriptors = [_]UsageFieldDescriptor{
                 .{ .key = "input_direct", .field = .input_tokens },
@@ -1263,7 +1255,11 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 .{ .key = "output_tool", .field = .total_tokens, .mode = .add },
             };
 
-            const usage = parseUsageObject(usage_obj, descriptors[0..]);
+            const usage = (try jsonParseUsageObjectWithDescriptors(
+                test_allocator,
+                &json_reader,
+                descriptors[0..],
+            )) orelse unreachable;
             try std.testing.expectEqual(@as(u64, 150), usage.input_tokens);
             try std.testing.expectEqual(@as(u64, 40), usage.cached_input_tokens);
             try std.testing.expectEqual(@as(u64, 30), usage.output_tokens);
@@ -1271,13 +1267,12 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             try std.testing.expectEqual(@as(u64, 220), usage.total_tokens);
         }
 
-        test "timestamp helpers duplicate json values" {
+        test "timestamp helpers duplicate slices" {
             var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
             defer arena.deinit();
             const allocator = arena.allocator();
 
-            const json_value = std.json.Value{ .string = "2025-02-15T09:30:00Z" };
-            const info = try timestampFromValue(allocator, 0, json_value) orelse unreachable;
+            const info = try timestampFromSlice(allocator, "2025-02-15T09:30:00Z", 0) orelse unreachable;
             try std.testing.expectEqualStrings("2025-02-15", info.local_iso_date[0..]);
         }
 
@@ -1288,43 +1283,44 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
 
             var label: []const u8 = "default";
             var overridden = false;
-            const first = std.json.Value{ .string = "override-one" };
-            overrideSessionLabelFromValue(allocator, &label, &overridden, first);
+            overrideSessionLabelFromSlice(allocator, &label, &overridden, "override-one");
             try std.testing.expectEqualStrings("override-one", label);
             try std.testing.expect(overridden);
 
-            const second = std.json.Value{ .string = "override-two" };
-            overrideSessionLabelFromValue(allocator, &label, &overridden, second);
+            overrideSessionLabelFromSlice(allocator, &label, &overridden, "override-two");
             try std.testing.expectEqualStrings("override-one", label);
         }
 
-        test "readJsonValue loads file data" {
-            const allocator = std.testing.allocator;
-            const tmp_path = "tokenuze-json-test.json";
-            defer std.fs.cwd().deleteFile(tmp_path) catch {};
-            try std.fs.cwd().writeFile(.{
-                .sub_path = tmp_path,
-                .data = "{ \"ok\": true }",
-            });
+        test "jsonWalkArrayObjects iterates array entries" {
+            const test_allocator = std.testing.allocator;
+            const json_src =
+                \\[
+                \\  { "value": 1 },
+                \\  "skip me",
+                \\  { "value": 2 }
+                \\]
+            ;
 
-            const ctx = ParseContext{
-                .provider_name = "test",
-                .legacy_fallback_model = null,
-                .cached_counts_overlap_input = false,
-            };
+            var slice_reader = std.Io.Reader.fixed(json_src);
+            var json_reader = std.json.Reader.init(test_allocator, &slice_reader);
+            defer json_reader.deinit();
 
-            const parsed_opt = readJsonValue(
-                allocator,
-                &ctx,
-                tmp_path,
-                .{},
-            ) orelse unreachable;
-            var parsed = parsed_opt;
-            defer parsed.deinit();
-            switch (parsed.value) {
-                .object => |obj| try std.testing.expect(obj.get("ok") != null),
-                else => unreachable,
-            }
+            var sum: usize = 0;
+            try jsonWalkArrayObjects(test_allocator, &json_reader, &sum, struct {
+                fn handle(sum_ptr: *usize, allocator: std.mem.Allocator, reader: *std.json.Reader, _: usize) !void {
+                    try jsonWalkObject(allocator, reader, sum_ptr, handleObjectField);
+                }
+
+                fn handleObjectField(sum_ptr: *usize, allocator: std.mem.Allocator, reader: *std.json.Reader, key: []const u8) !void {
+                    if (std.mem.eql(u8, key, "value")) {
+                        sum_ptr.* += try jsonParseU64Value(allocator, reader);
+                    } else {
+                        try reader.skipValue();
+                    }
+                }
+            }.handle);
+
+            try std.testing.expectEqual(@as(usize, 3), sum);
         }
     };
 }
