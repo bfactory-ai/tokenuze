@@ -3,6 +3,7 @@ const model = @import("../model.zig");
 const provider = @import("provider.zig");
 
 const RawUsage = model.RawTokenUsage;
+const TokenSlice = provider.JsonTokenSlice;
 const ModelState = provider.ModelState;
 
 const fallback_pricing = [_]provider.FallbackPricingEntry{
@@ -33,6 +34,26 @@ pub const collect = ProviderExports.collect;
 pub const streamEvents = ProviderExports.streamEvents;
 pub const loadPricingData = ProviderExports.loadPricingData;
 pub const EventConsumer = ProviderExports.EventConsumer;
+
+const PayloadResult = struct {
+    payload_type: ?TokenSlice = null,
+    model: ?TokenSlice = null,
+    last_usage: ?RawUsage = null,
+    total_usage: ?RawUsage = null,
+
+    fn deinit(self: *PayloadResult, allocator: std.mem.Allocator) void {
+        if (self.payload_type) |*tok| tok.deinit(allocator);
+        if (self.model) |*tok| tok.deinit(allocator);
+        self.* = .{};
+    }
+};
+
+const ObjectFieldContext = struct {
+    payload: *PayloadResult,
+    timestamp_token: *?TokenSlice,
+    is_turn_context: *bool,
+    is_event_msg: *bool,
+};
 
 fn parseCodexSessionFile(
     allocator: std.mem.Allocator,
@@ -87,81 +108,82 @@ const CodexLineHandler = struct {
         const trimmed = std.mem.trim(u8, line, " \t\r\n");
         if (trimmed.len == 0) return;
 
-        var parsed_line = std.json.parseFromSlice(std.json.Value, self.allocator, trimmed, .{}) catch |err| {
+        self.processSessionLine(trimmed) catch |err| {
             std.log.warn(
                 "{s}: failed to parse codex session file '{s}' line {d} ({s})",
                 .{ self.ctx.provider_name, self.file_path, line_index, @errorName(err) },
             );
-            return;
         };
-        defer parsed_line.deinit();
-
-        const record = switch (parsed_line.value) {
-            .object => |obj| obj,
-            else => return,
-        };
-
-        const type_slice = valueAsString(record.get("type")) orelse return;
-        if (std.mem.eql(u8, type_slice, "turn_context")) {
-            self.handleTurnContext(record);
-            return;
-        }
-        if (std.mem.eql(u8, type_slice, "event_msg")) {
-            self.handleEventMessage(record) catch |err| {
-                std.log.warn(
-                    "{s}: failed to process codex session file '{s}' line {d} ({s})",
-                    .{ self.ctx.provider_name, self.file_path, line_index, @errorName(err) },
-                );
-            };
-        }
     }
 
-    fn handleTurnContext(self: *CodexLineHandler, record: std.json.ObjectMap) void {
-        const payload_value = record.get("payload") orelse return;
-        const payload_obj = switch (payload_value) {
-            .object => |obj| obj,
-            else => return,
-        };
+    fn processSessionLine(self: *CodexLineHandler, line: []const u8) !void {
+        var slice_reader = std.Io.Reader.fixed(line);
+        var json_reader = std.json.Reader.init(self.allocator, &slice_reader);
+        defer json_reader.deinit();
 
-        var payload_model: ?[]const u8 = null;
-        captureModelFromPayload(payload_obj, &payload_model);
-        if (payload_model) |model_slice| {
-            _ = self.ctx.captureModel(self.allocator, self.model_state, model_slice) catch |err| {
-                self.ctx.logWarning(self.file_path, "failed to capture model", err);
-            };
+        if ((try json_reader.next()) != .object_begin) return;
+
+        var payload_result = PayloadResult{};
+        defer payload_result.deinit(self.allocator);
+        var timestamp_token: ?TokenSlice = null;
+        defer if (timestamp_token) |*tok| tok.deinit(self.allocator);
+        var is_turn_context = false;
+        var is_event_msg = false;
+
+        const context = ObjectFieldContext{
+            .payload = &payload_result,
+            .timestamp_token = &timestamp_token,
+            .is_turn_context = &is_turn_context,
+            .is_event_msg = &is_event_msg,
+        };
+        try walkObject(self.allocator, &json_reader, context, parseObjectField);
+
+        const trailing = try json_reader.next();
+        if (trailing != .end_of_document) try json_reader.skipValue();
+
+        if (timestamp_token == null) return;
+
+        if (is_turn_context) {
+            if (payload_result.model) |token| {
+                var model_token = token;
+                payload_result.model = null;
+                _ = self.ctx.captureModel(self.allocator, self.model_state, model_token) catch |err| {
+                    self.ctx.logWarning(self.file_path, "failed to capture model", err);
+                    model_token.deinit(self.allocator);
+                    return;
+                };
+                model_token.deinit(self.allocator);
+            }
+            return;
         }
-    }
 
-    fn handleEventMessage(self: *CodexLineHandler, record: std.json.ObjectMap) !void {
-        const timestamp_info = try provider.timestampFromValue(self.allocator, self.timezone_offset_minutes, record.get("timestamp")) orelse return;
+        if (!is_event_msg) return;
 
-        const payload_value = record.get("payload") orelse return;
-        const payload_obj = switch (payload_value) {
-            .object => |obj| obj,
-            else => return,
+        var payload_type_is_token_count = false;
+        if (payload_result.payload_type) |token| {
+            payload_type_is_token_count = std.mem.eql(u8, token.view(), "token_count");
+        }
+        if (!payload_type_is_token_count) return;
+
+        var raw_timestamp = timestamp_token.?;
+        timestamp_token = null;
+        const timestamp_info = try provider.timestampFromSlice(self.allocator, raw_timestamp.view(), self.timezone_offset_minutes) orelse {
+            raw_timestamp.deinit(self.allocator);
+            return;
         };
-
-        const payload_type = valueAsString(payload_obj.get("type")) orelse return;
-        if (!std.mem.eql(u8, payload_type, "token_count")) return;
-
-        const info_value = payload_obj.get("info") orelse return;
-        const info_obj = switch (info_value) {
-            .object => |obj| obj,
-            else => return,
-        };
-
-        var payload_model: ?[]const u8 = null;
-        captureModelFromPayload(payload_obj, &payload_model);
+        raw_timestamp.deinit(self.allocator);
 
         var delta_usage: ?model.TokenUsage = null;
-        if (parseCodexUsage(info_obj.get("last_token_usage"))) |last_raw| {
-            delta_usage = model.TokenUsage.fromRaw(last_raw);
-        } else if (parseCodexUsage(info_obj.get("total_token_usage"))) |total_raw| {
-            delta_usage = model.TokenUsage.deltaFrom(total_raw, self.previous_totals.*);
-            self.previous_totals.* = total_raw;
-        } else {
-            return;
+        if (payload_result.last_usage) |last_usage| {
+            delta_usage = model.TokenUsage.fromRaw(last_usage);
+        } else if (payload_result.total_usage) |total_usage| {
+            delta_usage = model.TokenUsage.deltaFrom(total_usage, self.previous_totals.*);
         }
+        if (payload_result.total_usage) |total_usage| {
+            self.previous_totals.* = total_usage;
+        }
+
+        if (delta_usage == null) return;
 
         var delta = delta_usage.?;
         self.ctx.normalizeUsageDelta(&delta);
@@ -169,94 +191,352 @@ const CodexLineHandler = struct {
             return;
         }
 
-        const resolved_model = (try self.ctx.requireModel(self.allocator, self.model_state, payload_model)) orelse return;
+        const payload_model = payload_result.model;
+        const resolved = (try self.ctx.requireModel(self.allocator, self.model_state, payload_model)) orelse return;
+        if (payload_result.model) |token| {
+            var model_token = token;
+            payload_result.model = null;
+            model_token.deinit(self.allocator);
+        }
+
         const event = model.TokenUsageEvent{
             .session_id = self.session_id,
             .timestamp = timestamp_info.text,
             .local_iso_date = timestamp_info.local_iso_date,
-            .model = resolved_model.name,
+            .model = resolved.name,
             .usage = delta,
-            .is_fallback = resolved_model.is_fallback,
+            .is_fallback = resolved.is_fallback,
             .display_input_tokens = self.ctx.computeDisplayInput(delta),
         };
         try self.events.append(self.allocator, event);
     }
 };
 
-fn parseCodexUsage(value: ?std.json.Value) ?RawUsage {
-    const usage_value = value orelse return null;
-    const usage_obj = switch (usage_value) {
-        .object => |obj| obj,
-        else => return null,
-    };
+fn parseObjectField(
+    context: ObjectFieldContext,
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    key: []const u8,
+) !void {
+    if (std.mem.eql(u8, key, "type")) {
+        var value = try readStringToken(allocator, reader);
+        defer value.deinit(allocator);
+        const type_slice = value.view();
+        if (std.mem.eql(u8, type_slice, "turn_context")) {
+            context.is_turn_context.* = true;
+            context.is_event_msg.* = false;
+        } else if (std.mem.eql(u8, type_slice, "event_msg")) {
+            context.is_event_msg.* = true;
+            context.is_turn_context.* = false;
+        }
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "timestamp")) {
+        replaceToken(context.timestamp_token, allocator, try readStringToken(allocator, reader));
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "payload")) {
+        try parsePayload(allocator, reader, context.payload);
+        return;
+    }
+
+    try reader.skipValue();
+}
+
+fn parsePayload(
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    payload_result: *PayloadResult,
+) !void {
+    const peek = try reader.peekNextTokenType();
+    if (peek == .null) {
+        _ = try reader.next();
+        return;
+    }
+    if (peek != .object_begin) {
+        try reader.skipValue();
+        return;
+    }
+
+    _ = try reader.next();
+
+    try walkObject(allocator, reader, payload_result, handlePayloadField);
+}
+
+fn parsePayloadField(
+    payload_result: *PayloadResult,
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    key: []const u8,
+) !void {
+    if (try parseSharedPayloadField(allocator, reader, key, payload_result)) return;
+
+    if (std.mem.eql(u8, key, "type")) {
+        replaceToken(&payload_result.payload_type, allocator, try readStringToken(allocator, reader));
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "info")) {
+        try parseInfoObject(allocator, reader, payload_result);
+        return;
+    }
+
+    try reader.skipValue();
+}
+
+fn handlePayloadField(
+    payload_result: *PayloadResult,
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    key: []const u8,
+) !void {
+    try parsePayloadField(payload_result, allocator, reader, key);
+}
+
+fn parseInfoObject(
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    payload_result: *PayloadResult,
+) !void {
+    const peek = try reader.peekNextTokenType();
+    if (peek == .null) {
+        _ = try reader.next();
+        return;
+    }
+    if (peek != .object_begin) {
+        try reader.skipValue();
+        return;
+    }
+
+    _ = try reader.next();
+
+    try walkObject(allocator, reader, payload_result, handleInfoField);
+}
+
+fn parseInfoField(
+    payload_result: *PayloadResult,
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    key: []const u8,
+) !void {
+    if (try parseSharedPayloadField(allocator, reader, key, payload_result)) return;
+
+    if (std.mem.eql(u8, key, "last_token_usage")) {
+        payload_result.last_usage = try parseUsageObject(allocator, reader);
+        return;
+    }
+    if (std.mem.eql(u8, key, "total_token_usage")) {
+        payload_result.total_usage = try parseUsageObject(allocator, reader);
+        return;
+    }
+
+    try reader.skipValue();
+}
+
+fn handleInfoField(
+    payload_result: *PayloadResult,
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    key: []const u8,
+) !void {
+    try parseInfoField(payload_result, allocator, reader, key);
+}
+
+fn parseUsageObject(
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+) !?RawUsage {
+    const peek = try reader.peekNextTokenType();
+    if (peek == .null) {
+        _ = try reader.next();
+        return null;
+    }
+    if (peek != .object_begin) {
+        try reader.skipValue();
+        return null;
+    }
+
+    _ = try reader.next();
 
     var accumulator = model.UsageAccumulator{};
-    var iterator = usage_obj.iterator();
-    while (iterator.next()) |entry| {
-        const key = entry.key_ptr.*;
-        const field = model.usageFieldForKey(key) orelse {
-            continue;
-        };
-        const amount = provider.jsonValueToU64(entry.value_ptr.*);
-        accumulator.applyField(field, amount);
-    }
-    return accumulator.finalize();
-}
 
-fn captureModelFromPayload(payload_obj: std.json.ObjectMap, storage: *?[]const u8) void {
-    captureModelField(payload_obj.get("model"), storage);
-    captureModelField(payload_obj.get("model_name"), storage);
-    if (storage.* != null) return;
-
-    if (payload_obj.get("metadata")) |metadata_value| {
-        captureModelFromMetadata(metadata_value, storage);
+    while (true) {
+        switch (try reader.peekNextTokenType()) {
+            .object_end => {
+                _ = try reader.next();
+                return accumulator.finalize();
+            },
+            .string => {
+                var key = try TokenSlice.fromString(allocator, reader);
+                defer key.deinit(allocator);
+                try parseUsageField(allocator, reader, key.view(), &accumulator);
+            },
+            else => return error.UnexpectedToken,
+        }
     }
 }
 
-fn captureModelField(value: ?std.json.Value, storage: *?[]const u8) void {
-    if (storage.* != null) return;
-    const slice = valueAsString(value) orelse return;
-    const trimmed = std.mem.trim(u8, slice, " \t\r\n");
-    if (trimmed.len == 0) return;
-    storage.* = trimmed;
-}
-
-fn captureModelFromMetadata(value: std.json.Value, storage: *?[]const u8) void {
-    if (storage.* != null) return;
-    switch (value) {
-        .object => |obj| {
-            var iterator = obj.iterator();
-            while (iterator.next()) |entry| {
-                const key = entry.key_ptr.*;
-                const child = entry.value_ptr.*;
-                if (isModelKey(key)) {
-                    captureModelField(child, storage);
-                } else {
-                    captureModelFromMetadata(child, storage);
-                }
-                if (storage.* != null) return;
-            }
-        },
-        .array => |arr| {
-            for (arr.items) |item| {
-                captureModelFromMetadata(item, storage);
-                if (storage.* != null) return;
-            }
-        },
-        else => {},
-    }
-}
-
-fn valueAsString(value: ?std.json.Value) ?[]const u8 {
-    const actual = value orelse return null;
-    return switch (actual) {
-        .string => |slice| slice,
-        else => null,
+fn parseUsageField(
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    key: []const u8,
+    accumulator: *model.UsageAccumulator,
+) !void {
+    const field = model.usageFieldForKey(key) orelse {
+        try reader.skipValue();
+        return;
     };
+    const value = try parseU64Value(allocator, reader);
+    accumulator.applyField(field, value);
+}
+
+fn parseModelValue(
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    storage: *?TokenSlice,
+) !void {
+    const peek = try reader.peekNextTokenType();
+    switch (peek) {
+        .object_begin => {
+            _ = try reader.next();
+            while (true) {
+                switch (try reader.peekNextTokenType()) {
+                    .object_end => {
+                        _ = try reader.next();
+                        return;
+                    },
+                    .string => {
+                        var key = try TokenSlice.fromString(allocator, reader);
+                        defer key.deinit(allocator);
+                        if (isModelKey(key.view())) {
+                            const maybe_token = try readOptionalStringToken(allocator, reader);
+                            if (maybe_token) |token| captureModelToken(storage, allocator, token);
+                        } else {
+                            try parseModelValue(allocator, reader, storage);
+                        }
+                    },
+                    else => return error.UnexpectedToken,
+                }
+            }
+        },
+        .array_begin => {
+            _ = try reader.next();
+            while (true) {
+                const next_type = try reader.peekNextTokenType();
+                if (next_type == .array_end) {
+                    _ = try reader.next();
+                    return;
+                }
+                try parseModelValue(allocator, reader, storage);
+            }
+        },
+        .string => try reader.skipValue(),
+        .null => {
+            _ = try reader.next();
+        },
+        else => try reader.skipValue(),
+    }
+}
+
+fn parseSharedPayloadField(
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    key: []const u8,
+    payload_result: *PayloadResult,
+) !bool {
+    if (isModelKey(key)) {
+        const maybe_token = try readOptionalStringToken(allocator, reader);
+        if (maybe_token) |token| captureModelToken(&payload_result.model, allocator, token);
+        return true;
+    }
+    if (std.mem.eql(u8, key, "metadata")) {
+        try parseModelValue(allocator, reader, &payload_result.model);
+        return true;
+    }
+    return false;
+}
+
+fn readStringToken(allocator: std.mem.Allocator, reader: *std.json.Reader) !TokenSlice {
+    return TokenSlice.fromString(allocator, reader);
+}
+
+fn readOptionalStringToken(allocator: std.mem.Allocator, reader: *std.json.Reader) !?TokenSlice {
+    const peek = try reader.peekNextTokenType();
+    switch (peek) {
+        .null => {
+            _ = try reader.next();
+            return null;
+        },
+        .string => return try readStringToken(allocator, reader),
+        else => return error.UnexpectedToken,
+    }
+}
+
+fn readNumberToken(allocator: std.mem.Allocator, reader: *std.json.Reader) !TokenSlice {
+    return TokenSlice.fromNumber(allocator, reader);
+}
+
+fn replaceToken(dest: *?TokenSlice, allocator: std.mem.Allocator, token: TokenSlice) void {
+    if (dest.*) |*existing| existing.deinit(allocator);
+    dest.* = token;
+}
+
+fn captureModelToken(dest: *?TokenSlice, allocator: std.mem.Allocator, token: TokenSlice) void {
+    if (token.view().len == 0) {
+        var tmp = token;
+        tmp.deinit(allocator);
+        return;
+    }
+    if (dest.* == null) {
+        dest.* = token;
+    } else {
+        var tmp = token;
+        tmp.deinit(allocator);
+    }
 }
 
 fn isModelKey(key: []const u8) bool {
     return std.mem.eql(u8, key, "model") or std.mem.eql(u8, key, "model_name");
+}
+
+fn walkObject(
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    context: anytype,
+    comptime handler: fn (@TypeOf(context), std.mem.Allocator, *std.json.Reader, []const u8) anyerror!void,
+) !void {
+    while (true) {
+        switch (try reader.peekNextTokenType()) {
+            .object_end => {
+                _ = try reader.next();
+                return;
+            },
+            .string => {
+                var key = try TokenSlice.fromString(allocator, reader);
+                defer key.deinit(allocator);
+                try handler(context, allocator, reader, key.view());
+            },
+            else => return error.UnexpectedToken,
+        }
+    }
+}
+
+fn parseU64Value(allocator: std.mem.Allocator, reader: *std.json.Reader) !u64 {
+    const peek = try reader.peekNextTokenType();
+    switch (peek) {
+        .null => {
+            _ = try reader.next();
+            return 0;
+        },
+        .number => {
+            var number = try readNumberToken(allocator, reader);
+            defer number.deinit(allocator);
+            return model.parseTokenNumber(number.view());
+        },
+        else => return error.UnexpectedToken,
+    }
 }
 
 test "codex parser emits usage events from token_count entries" {
