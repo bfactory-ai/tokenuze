@@ -119,6 +119,7 @@ fn sendPayload(
             .content_type = "application/json",
             .extra_headers = &extra_headers,
             .response_limit = std.Io.Limit.limited(1024 * 1024),
+            .stream_handler = http_client.discardStream,
         },
     );
 }

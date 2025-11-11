@@ -1,5 +1,7 @@
 const std = @import("std");
 
+pub const ResponseHandler = *const fn (?*anyopaque, []const u8) anyerror!void;
+
 pub const RequestOptions = struct {
     method: std.http.Method = .GET,
     url: []const u8,
@@ -8,15 +10,20 @@ pub const RequestOptions = struct {
     extra_headers: []const std.http.Header = &.{},
     response_limit: std.Io.Limit = std.Io.Limit.limited(1024 * 1024),
     force_identity_encoding: bool = false,
+    stream_handler: ?ResponseHandler = null,
+    stream_context: ?*anyopaque = null,
 };
 
 pub const Response = struct {
     status: std.http.Status,
-    body: []u8,
+    body: []u8 = &.{},
     allocator: std.mem.Allocator,
+    owns_body: bool = false,
 
     pub fn deinit(self: *Response) void {
-        self.allocator.free(self.body);
+        if (self.owns_body) {
+            self.allocator.free(self.body);
+        }
         self.* = undefined;
     }
 };
@@ -104,16 +111,32 @@ fn sendRequest(
 
     var response = try http_request.receiveHead(&.{});
 
-    var transfer_buffer: [4096]u8 = undefined;
-    const reader = response.reader(&transfer_buffer);
-    const body = try reader.allocRemaining(response_allocator, options.response_limit);
-
-    return .{
-        .status = response.head.status,
-        .body = body,
-        .allocator = response_allocator,
-    };
+    if (options.stream_handler) |handler| {
+        var buffer: [4096]u8 = undefined;
+        const reader = response.reader(&buffer);
+        var remaining = options.response_limit;
+        while (true) {
+            const got = try reader.readSliceShort(buffer[0..]);
+            if (got == 0) break;
+            remaining = remaining.subtract(got) orelse return error.ResponseLimitExceeded;
+            try handler(options.stream_context, buffer[0..got]);
+            if (got < buffer.len) break;
+        }
+        return .{ .status = response.head.status, .allocator = response_allocator };
+    } else {
+        var transfer_buffer: [4096]u8 = undefined;
+        const reader = response.reader(&transfer_buffer);
+        const body = try reader.allocRemaining(response_allocator, options.response_limit);
+        return .{
+            .status = response.head.status,
+            .body = body,
+            .allocator = response_allocator,
+            .owns_body = true,
+        };
+    }
 }
+
+pub fn discardStream(_: ?*anyopaque, _: []const u8) anyerror!void {}
 
 fn connectWithLibcResolver(
     allocator: std.mem.Allocator,
