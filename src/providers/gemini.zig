@@ -221,7 +221,7 @@ fn emitGeminiMessage(state: *GeminiParseState, message: *GeminiMessage) !void {
     state.ctx.normalizeUsageDelta(&delta);
     state.previous_totals.* = usage_raw;
 
-    if (delta.input_tokens == 0 and delta.cached_input_tokens == 0 and delta.output_tokens == 0 and delta.reasoning_output_tokens == 0) {
+    if (!provider.shouldEmitUsage(delta)) {
         return;
     }
 

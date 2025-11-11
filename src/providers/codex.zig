@@ -136,7 +136,7 @@ const CodexLineHandler = struct {
             .is_turn_context = &is_turn_context,
             .is_event_msg = &is_event_msg,
         };
-        try walkObject(self.allocator, &json_reader, context, parseObjectField);
+        try provider.jsonWalkObject(self.allocator, &json_reader, context, parseObjectField);
 
         const trailing = try json_reader.next();
         if (trailing != .end_of_document) try json_reader.skipValue();
@@ -187,7 +187,7 @@ const CodexLineHandler = struct {
 
         var delta = delta_usage.?;
         self.ctx.normalizeUsageDelta(&delta);
-        if (delta.input_tokens == 0 and delta.cached_input_tokens == 0 and delta.output_tokens == 0 and delta.reasoning_output_tokens == 0) {
+        if (!provider.shouldEmitUsage(delta)) {
             return;
         }
 
@@ -262,7 +262,7 @@ fn parsePayload(
 
     _ = try reader.next();
 
-    try walkObject(allocator, reader, payload_result, parsePayloadField);
+    try provider.jsonWalkObject(allocator, reader, payload_result, parsePayloadField);
 }
 
 fn parsePayloadField(
@@ -303,7 +303,7 @@ fn parseInfoObject(
 
     _ = try reader.next();
 
-    try walkObject(allocator, reader, payload_result, parseInfoField);
+    try provider.jsonWalkObject(allocator, reader, payload_result, parseInfoField);
 }
 
 fn parseInfoField(
@@ -326,107 +326,22 @@ fn parseInfoField(
     try reader.skipValue();
 }
 
-fn parseModelValue(
-    allocator: std.mem.Allocator,
-    reader: *std.json.Reader,
-    storage: *?TokenSlice,
-) !void {
-    const peek = try reader.peekNextTokenType();
-    switch (peek) {
-        .object_begin => {
-            _ = try reader.next();
-            try walkObject(allocator, reader, storage, handleModelField);
-        },
-        .array_begin => {
-            _ = try reader.next();
-            while (true) {
-                const next_type = try reader.peekNextTokenType();
-                if (next_type == .array_end) {
-                    _ = try reader.next();
-                    return;
-                }
-                try parseModelValue(allocator, reader, storage);
-            }
-        },
-        .string => try reader.skipValue(),
-        .null => {
-            _ = try reader.next();
-        },
-        else => try reader.skipValue(),
-    }
-}
-
-fn handleModelField(
-    storage: *?TokenSlice,
-    allocator: std.mem.Allocator,
-    reader: *std.json.Reader,
-    key: []const u8,
-) !void {
-    if (isModelKey(key)) {
-        const maybe_token = try provider.jsonReadOptionalStringToken(allocator, reader);
-        if (maybe_token) |token| captureModelToken(storage, allocator, token);
-        return;
-    }
-
-    try parseModelValue(allocator, reader, storage);
-}
-
 fn parseSharedPayloadField(
     allocator: std.mem.Allocator,
     reader: *std.json.Reader,
     key: []const u8,
     payload_result: *PayloadResult,
 ) !bool {
-    if (isModelKey(key)) {
+    if (provider.isModelKey(key)) {
         const maybe_token = try provider.jsonReadOptionalStringToken(allocator, reader);
-        if (maybe_token) |token| captureModelToken(&payload_result.model, allocator, token);
+        if (maybe_token) |token| provider.captureModelToken(&payload_result.model, allocator, token);
         return true;
     }
     if (std.mem.eql(u8, key, "metadata")) {
-        try parseModelValue(allocator, reader, &payload_result.model);
+        try provider.captureModelValue(allocator, reader, &payload_result.model);
         return true;
     }
     return false;
-}
-
-fn captureModelToken(dest: *?TokenSlice, allocator: std.mem.Allocator, token: TokenSlice) void {
-    if (token.view().len == 0) {
-        var tmp = token;
-        tmp.deinit(allocator);
-        return;
-    }
-    if (dest.* == null) {
-        dest.* = token;
-    } else {
-        var tmp = token;
-        tmp.deinit(allocator);
-    }
-}
-
-fn isModelKey(key: []const u8) bool {
-    return std.mem.eql(u8, key, "model") or std.mem.eql(u8, key, "model_name");
-}
-
-fn walkObject(
-    allocator: std.mem.Allocator,
-    reader: *std.json.Reader,
-    context: anytype,
-    comptime handler: fn (@TypeOf(context), std.mem.Allocator, *std.json.Reader, []const u8) anyerror!void,
-) !void {
-    while (true) {
-        switch (try reader.peekNextTokenType()) {
-            .object_end => {
-                _ = try reader.next();
-                return;
-            },
-            .string => {
-                var key = try TokenSlice.fromString(allocator, reader);
-                defer key.deinit(allocator);
-                try handler(context, allocator, reader, key.view());
-            },
-            else => return error.UnexpectedToken,
-        }
-    }
 }
 
 test "codex parser emits usage events from token_count entries" {

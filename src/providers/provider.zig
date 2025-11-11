@@ -644,6 +644,73 @@ pub fn replaceJsonToken(
     dest.* = token;
 }
 
+pub fn captureModelToken(
+    dest: *?JsonTokenSlice,
+    allocator: std.mem.Allocator,
+    token: JsonTokenSlice,
+) void {
+    if (token.view().len == 0) {
+        var tmp = token;
+        tmp.deinit(allocator);
+        return;
+    }
+    if (dest.* == null) {
+        dest.* = token;
+    } else {
+        var tmp = token;
+        tmp.deinit(allocator);
+    }
+}
+
+pub fn captureModelValue(
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    storage: *?JsonTokenSlice,
+) !void {
+    const peek = try reader.peekNextTokenType();
+    switch (peek) {
+        .object_begin => {
+            _ = try reader.next();
+            try jsonWalkObject(allocator, reader, storage, handleModelField);
+        },
+        .array_begin => {
+            _ = try reader.next();
+            while (true) {
+                const next_type = try reader.peekNextTokenType();
+                if (next_type == .array_end) {
+                    _ = try reader.next();
+                    return;
+                }
+                try captureModelValue(allocator, reader, storage);
+            }
+        },
+        .string => try reader.skipValue(),
+        .null => {
+            _ = try reader.next();
+        },
+        else => try reader.skipValue(),
+    }
+}
+
+fn handleModelField(
+    storage: *?JsonTokenSlice,
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    key: []const u8,
+) !void {
+    if (isModelKey(key)) {
+        const maybe_token = try jsonReadOptionalStringToken(allocator, reader);
+        if (maybe_token) |token| captureModelToken(storage, allocator, token);
+        return;
+    }
+
+    try captureModelValue(allocator, reader, storage);
+}
+
+pub fn isModelKey(key: []const u8) bool {
+    return std.mem.eql(u8, key, "model") or std.mem.eql(u8, key, "model_name");
+}
+
 pub fn jsonParseU64Value(allocator: std.mem.Allocator, reader: *std.json.Reader) !u64 {
     const peek = try reader.peekNextTokenType();
     switch (peek) {
@@ -794,6 +861,18 @@ pub fn jsonWalkObject(
             else => return error.UnexpectedToken,
         }
     }
+}
+
+pub fn shouldEmitUsage(usage: Model.TokenUsage) bool {
+    return !usageIsZero(usage);
+}
+
+pub fn usageIsZero(usage: Model.TokenUsage) bool {
+    return usage.input_tokens == 0 and
+        usage.cache_creation_input_tokens == 0 and
+        usage.cached_input_tokens == 0 and
+        usage.output_tokens == 0 and
+        usage.reasoning_output_tokens == 0;
 }
 
 fn readNumberValue(allocator: std.mem.Allocator, reader: *std.json.Reader) !f64 {

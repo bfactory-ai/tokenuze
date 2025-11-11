@@ -169,8 +169,8 @@ const ClaudeLineHandler = struct {
 
         const resolved_model = (try self.ctx.requireModel(self.allocator, self.model_state, record.message.model)) orelse return;
 
-        var usage = model.TokenUsage.fromRaw(usage_raw);
-        if (usage.input_tokens == 0 and usage.cached_input_tokens == 0 and usage.output_tokens == 0 and usage.reasoning_output_tokens == 0) {
+        const usage = model.TokenUsage.fromRaw(usage_raw);
+        if (!provider.shouldEmitUsage(usage)) {
             return;
         }
 
