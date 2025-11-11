@@ -1,6 +1,7 @@
 const std = @import("std");
 const Model = @import("../model.zig");
 const timeutil = @import("../time.zig");
+const io_util = @import("../io_util.zig");
 
 pub const FallbackPricingEntry = struct {
     name: []const u8,
@@ -120,55 +121,6 @@ pub const MessageDeduper = struct {
         const gop = try self.map.getOrPut(key);
         if (gop.found_existing) return false;
         return true;
-    }
-};
-
-pub const CollectWriter = struct {
-    base: std.Io.Writer,
-    list: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-
-    pub fn init(list: *std.ArrayList(u8), allocator: std.mem.Allocator) CollectWriter {
-        return .{
-            .base = .{
-                .vtable = &.{
-                    .drain = CollectWriter.drain,
-                    .sendFile = std.Io.Writer.unimplementedSendFile,
-                    .flush = CollectWriter.flush,
-                    .rebase = std.Io.Writer.defaultRebase,
-                },
-                .buffer = &.{},
-            },
-            .list = list,
-            .allocator = allocator,
-        };
-    }
-
-    pub fn drain(
-        writer: *std.Io.Writer,
-        data: []const []const u8,
-        splat: usize,
-    ) std.Io.Writer.Error!usize {
-        const self: *CollectWriter = @fieldParentPtr("base", writer);
-        var written: usize = 0;
-        for (data) |chunk| {
-            if (chunk.len == 0) continue;
-            self.list.appendSlice(self.allocator, chunk) catch return error.WriteFailed;
-            written += chunk.len;
-        }
-        if (splat > 1 and data.len != 0) {
-            const last = data[data.len - 1];
-            const extra = splat - 1;
-            for (0..extra) |_| {
-                self.list.appendSlice(self.allocator, last) catch return error.WriteFailed;
-                written += last.len;
-            }
-        }
-        return written;
-    }
-
-    pub fn flush(_: *std.Io.Writer) std.Io.Writer.Error!void {
-        return;
     }
 };
 
@@ -358,8 +310,8 @@ pub fn streamJsonLines(
 
     while (true) {
         partial_line.clearRetainingCapacity();
-        var writer_ctx = CollectWriter.init(&partial_line, allocator);
-        const streamed = reader.streamDelimiterEnding(&writer_ctx.base, options.delimiter) catch |err| {
+        var writer_ctx = io_util.ArrayWriter.init(&partial_line, allocator);
+        const streamed = reader.streamDelimiterEnding(writer_ctx.writer(), options.delimiter) catch |err| {
             ctx.logWarning(file_path, options.read_error_message, err);
             return;
         };
