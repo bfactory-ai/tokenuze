@@ -13,8 +13,6 @@ pub const ProviderUpload = struct {
 };
 
 const DEFAULT_API_URL = "http://localhost:8000";
-const empty_sessions_json = "{\"sessions\":[],\"totals\":{}}";
-const empty_weekly_json = "{\"weekly\":[]}";
 
 const UploadError = error{
     Unauthorized,
