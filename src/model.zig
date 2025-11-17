@@ -2,8 +2,8 @@ const std = @import("std");
 const io_util = @import("io_util.zig");
 const timeutil = @import("time.zig");
 
-pub const MILLION = 1_000_000.0;
-pub const PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+pub const million = 1_000_000.0;
+pub const pricing_url = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 
 pub const UsageFieldVisibility = struct {
     cache_creation: bool = true,
@@ -20,7 +20,7 @@ pub const DateFilters = struct {
     until: ?[10]u8 = null,
     pretty_output: bool = false,
     output_format: OutputFormat = .table,
-    timezone_offset_minutes: i16 = @intCast(timeutil.DEFAULT_TIMEZONE_OFFSET_MINUTES),
+    timezone_offset_minutes: i16 = @intCast(timeutil.default_timezone_offset_minutes),
 };
 
 pub const ParseDateError = error{
@@ -70,10 +70,10 @@ pub const TokenUsage = struct {
         const non_cached = self.input_tokens - overlap;
         const cached = self.cached_input_tokens;
 
-        const cache_creation_cost = (@as(f64, @floatFromInt(self.cache_creation_input_tokens)) / MILLION) * pricing.cache_creation_cost_per_m;
-        const input_cost = (@as(f64, @floatFromInt(non_cached)) / MILLION) * pricing.input_cost_per_m;
-        const cached_cost = (@as(f64, @floatFromInt(cached)) / MILLION) * pricing.cached_input_cost_per_m;
-        const output_cost = (@as(f64, @floatFromInt(self.output_tokens)) / MILLION) * pricing.output_cost_per_m;
+        const cache_creation_cost = (@as(f64, @floatFromInt(self.cache_creation_input_tokens)) / million) * pricing.cache_creation_cost_per_m;
+        const input_cost = (@as(f64, @floatFromInt(non_cached)) / million) * pricing.input_cost_per_m;
+        const cached_cost = (@as(f64, @floatFromInt(cached)) / million) * pricing.cached_input_cost_per_m;
+        const output_cost = (@as(f64, @floatFromInt(self.output_tokens)) / million) * pricing.output_cost_per_m;
 
         return cache_creation_cost + input_cost + cached_cost + output_cost;
     }

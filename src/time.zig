@@ -6,7 +6,7 @@ const c = @cImport({
     @cInclude("time.h");
 });
 
-pub const DEFAULT_TIMEZONE_OFFSET_MINUTES: i32 = 0;
+pub const default_timezone_offset_minutes: i32 = 0;
 
 pub const TimestampError = error{
     InvalidFormat,
@@ -20,7 +20,7 @@ pub const ParseTimezoneError = error{
     OutOfRange,
 };
 
-const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
+const seconds_per_day: i64 = 24 * 60 * 60;
 
 pub fn isoDateForTimezone(timestamp: []const u8, offset_minutes: i32) TimestampError![10]u8 {
     const utc_seconds = try parseIso8601ToUtcSeconds(timestamp);
@@ -237,7 +237,7 @@ fn parseIso8601ToUtcSeconds(timestamp: []const u8) TimestampError!i64 {
     }
 
     const day_count = daysFromCivil(@as(i32, @intCast(year)), month, day);
-    const seconds = @as(i64, day_count) * SECONDS_PER_DAY +
+    const seconds = @as(i64, day_count) * seconds_per_day +
         @as(i64, hour) * 3600 +
         @as(i64, minute) * 60 +
         @as(i64, second);
@@ -363,7 +363,7 @@ fn tmToUnixSeconds(tm_value: c.tm) i64 {
     const minute = tm_value.tm_min;
     const second = tm_value.tm_sec;
     const day_count = daysFromCivil(year, month, day);
-    return day_count * SECONDS_PER_DAY +
+    return day_count * seconds_per_day +
         @as(i64, hour) * 3600 +
         @as(i64, minute) * 60 +
         @as(i64, second);

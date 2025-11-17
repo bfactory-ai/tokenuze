@@ -1,12 +1,12 @@
 const std = @import("std");
-const Model = @import("../model.zig");
+const model = @import("../model.zig");
 const timeutil = @import("../time.zig");
 const io_util = @import("../io_util.zig");
 const http_client = @import("../http_client.zig");
 
 pub const FallbackPricingEntry = struct {
     name: []const u8,
-    pricing: Model.ModelPricing,
+    pricing: model.ModelPricing,
 };
 
 pub const ParseContext = struct {
@@ -21,7 +21,7 @@ pub const ParseContext = struct {
         );
     }
 
-    pub fn normalizeUsageDelta(self: ParseContext, delta: *Model.TokenUsage) void {
+    pub fn normalizeUsageDelta(self: ParseContext, delta: *model.TokenUsage) void {
         if (!self.cached_counts_overlap_input) return;
         const overlap = if (delta.cached_input_tokens > delta.input_tokens)
             delta.input_tokens
@@ -31,7 +31,7 @@ pub const ParseContext = struct {
         delta.cached_input_tokens = overlap;
     }
 
-    pub fn computeDisplayInput(self: ParseContext, usage: Model.TokenUsage) u64 {
+    pub fn computeDisplayInput(self: ParseContext, usage: model.TokenUsage) u64 {
         if (!self.cached_counts_overlap_input) return usage.input_tokens;
         return std.math.add(u64, usage.input_tokens, usage.cached_input_tokens) catch std.math.maxInt(u64);
     }
@@ -83,7 +83,7 @@ fn modelSliceFrom(comptime T: type, raw_model: T) ?[]const u8 {
             return null;
         },
         .@"struct" => {
-            if (T == Model.TokenBuffer) {
+            if (T == model.TokenBuffer) {
                 return raw_model.slice;
             }
             return null;
@@ -145,8 +145,8 @@ pub fn resolveModel(
     ctx: *const ParseContext,
     state: *ModelState,
 ) ?ResolvedModel {
-    if (state.current) |model| {
-        return .{ .name = model, .is_fallback = state.is_fallback };
+    if (state.current) |mod| {
+        return .{ .name = mod, .is_fallback = state.is_fallback };
     }
 
     if (ctx.legacy_fallback_model) |legacy| {
@@ -197,12 +197,12 @@ pub const UsageValueMode = enum {
 
 pub const UsageFieldDescriptor = struct {
     key: []const u8,
-    field: Model.UsageField,
+    field: model.UsageField,
     mode: UsageValueMode = .set,
 };
 
 const UsageDescriptorContext = struct {
-    accumulator: *Model.UsageAccumulator,
+    accumulator: *model.UsageAccumulator,
     descriptors: []const UsageFieldDescriptor,
 };
 
@@ -354,7 +354,7 @@ pub const ParseSessionFn = *const fn (
     file_path: []const u8,
     deduper: ?*MessageDeduper,
     timezone_offset_minutes: i32,
-    events: *std.ArrayList(Model.TokenUsageEvent),
+    events: *std.ArrayList(model.TokenUsageEvent),
 ) anyerror!void;
 
 pub const ProviderConfig = struct {
@@ -391,7 +391,7 @@ pub const RemotePricingStats = struct {
 pub fn loadRemotePricing(
     shared_allocator: std.mem.Allocator,
     temp_allocator: std.mem.Allocator,
-    pricing: *Model.PricingMap,
+    pricing: *model.PricingMap,
 ) !RemotePricingStats {
     var stats: RemotePricingStats = .{};
     if (remote_pricing_loaded.load(.acquire)) {
@@ -422,14 +422,14 @@ const nsToMs = timeutil.nsToMs;
 fn fetchRemotePricing(
     shared_allocator: std.mem.Allocator,
     temp_allocator: std.mem.Allocator,
-    pricing: *Model.PricingMap,
+    pricing: *model.PricingMap,
 ) !void {
     var response = try http_client.request(
         temp_allocator,
         temp_allocator,
         .{
             .method = .GET,
-            .url = Model.PRICING_URL,
+            .url = model.pricing_url,
             .force_identity_encoding = true,
             .response_limit = std.Io.Limit.limited(4 * 1024 * 1024),
         },
@@ -451,7 +451,7 @@ fn fetchRemotePricing(
 const PricingFeedParser = struct {
     allocator: std.mem.Allocator,
     temp_allocator: std.mem.Allocator,
-    pricing: *Model.PricingMap,
+    pricing: *model.PricingMap,
     const AliasError = error{OutOfMemory};
 
     pub fn parse(self: *PricingFeedParser, reader: *std.json.Reader) !void {
@@ -486,7 +486,7 @@ const PricingFeedParser = struct {
         self: *PricingFeedParser,
         scratch_allocator: std.mem.Allocator,
         reader: *std.json.Reader,
-    ) !?Model.ModelPricing {
+    ) !?model.ModelPricing {
         _ = self;
         if ((try reader.next()) != .object_begin) {
             try reader.skipValue();
@@ -526,25 +526,25 @@ const PricingFeedParser = struct {
         if (input_rate == null or output_rate == null) return null;
         const creation = cache_creation_rate orelse input_rate.?;
         const cached = cached_rate orelse input_rate.?;
-        return Model.ModelPricing{
-            .input_cost_per_m = input_rate.? * Model.MILLION,
-            .cache_creation_cost_per_m = creation * Model.MILLION,
-            .cached_input_cost_per_m = cached * Model.MILLION,
-            .output_cost_per_m = output_rate.? * Model.MILLION,
+        return model.ModelPricing{
+            .input_cost_per_m = input_rate.? * model.million,
+            .cache_creation_cost_per_m = creation * model.million,
+            .cached_input_cost_per_m = cached * model.million,
+            .output_cost_per_m = output_rate.? * model.million,
         };
     }
 
     fn insertPricingEntries(
         self: *PricingFeedParser,
         name: []const u8,
-        entry: Model.ModelPricing,
+        entry: model.ModelPricing,
         alias_buffer: *std.ArrayList(u8),
     ) AliasError!void {
         _ = alias_buffer;
         _ = try self.putPricing(name, entry);
     }
 
-    fn putPricing(self: *PricingFeedParser, key: []const u8, entry: Model.ModelPricing) AliasError!bool {
+    fn putPricing(self: *PricingFeedParser, key: []const u8, entry: model.ModelPricing) AliasError!bool {
         if (self.pricing.get(key) != null) return false;
         const copied_name = try self.allocator.dupe(u8, key);
         errdefer self.allocator.free(copied_name);
@@ -706,7 +706,7 @@ pub fn jsonParseU64Value(allocator: std.mem.Allocator, reader: *std.json.Reader)
         .number => {
             var number = try jsonReadNumberToken(allocator, reader);
             defer number.deinit(allocator);
-            return Model.parseTokenNumber(number.view());
+            return model.parseTokenNumber(number.view());
         },
         else => return error.UnexpectedToken,
     }
@@ -715,8 +715,8 @@ pub fn jsonParseU64Value(allocator: std.mem.Allocator, reader: *std.json.Reader)
 pub fn jsonParseUsageObject(
     allocator: std.mem.Allocator,
     reader: *std.json.Reader,
-) !?Model.RawTokenUsage {
-    var accumulator = Model.UsageAccumulator{};
+) !?model.RawTokenUsage {
+    var accumulator = model.UsageAccumulator{};
     if (!try jsonParseUsageObjectCommon(allocator, reader, &accumulator, jsonParseUsageField)) {
         return null;
     }
@@ -727,8 +727,8 @@ pub fn jsonParseUsageObjectWithDescriptors(
     allocator: std.mem.Allocator,
     reader: *std.json.Reader,
     descriptors: []const UsageFieldDescriptor,
-) !?Model.RawTokenUsage {
-    var accumulator = Model.UsageAccumulator{};
+) !?model.RawTokenUsage {
+    var accumulator = model.UsageAccumulator{};
     var context = UsageDescriptorContext{
         .accumulator = &accumulator,
         .descriptors = descriptors,
@@ -774,12 +774,12 @@ fn jsonParseUsageObjectCommon(
 }
 
 fn jsonParseUsageField(
-    accumulator: *Model.UsageAccumulator,
+    accumulator: *model.UsageAccumulator,
     allocator: std.mem.Allocator,
     reader: *std.json.Reader,
     key: []const u8,
 ) !void {
-    const field = Model.usageFieldForKey(key) orelse {
+    const field = model.usageFieldForKey(key) orelse {
         try reader.skipValue();
         return;
     };
@@ -872,11 +872,11 @@ pub fn jsonWalkArrayObjects(
     }
 }
 
-pub fn shouldEmitUsage(usage: Model.TokenUsage) bool {
+pub fn shouldEmitUsage(usage: model.TokenUsage) bool {
     return !usageIsZero(usage);
 }
 
-pub fn usageIsZero(usage: Model.TokenUsage) bool {
+pub fn usageIsZero(usage: model.TokenUsage) bool {
     return usage.input_tokens == 0 and
         usage.cache_creation_input_tokens == 0 and
         usage.cached_input_tokens == 0 and
@@ -921,7 +921,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
         pub const EventConsumer = struct {
             context: *anyopaque,
             mutex: ?*std.Thread.Mutex = null,
-            ingest: *const fn (*anyopaque, std.mem.Allocator, *Model.TokenUsageEvent, Model.DateFilters) anyerror!void,
+            ingest: *const fn (*anyopaque, std.mem.Allocator, *model.TokenUsageEvent, model.DateFilters) anyerror!void,
         };
 
         const PARSE_CONTEXT = ParseContext{
@@ -935,14 +935,14 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
         const REQUIRES_DEDUPER = cfg.requires_deduper;
 
         const SummaryConsumer = struct {
-            builder: *Model.SummaryBuilder,
+            builder: *model.SummaryBuilder,
         };
 
         fn summaryIngest(
             ctx_ptr: *anyopaque,
             allocator: std.mem.Allocator,
-            event: *Model.TokenUsageEvent,
-            filters: Model.DateFilters,
+            event: *model.TokenUsageEvent,
+            filters: model.DateFilters,
         ) anyerror!void {
             const ctx = @as(*SummaryConsumer, @ptrCast(@alignCast(ctx_ptr)));
             try ctx.builder.ingest(allocator, event, filters);
@@ -951,9 +951,9 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
         pub fn collect(
             shared_allocator: std.mem.Allocator,
             temp_allocator: std.mem.Allocator,
-            summaries: *Model.SummaryBuilder,
-            filters: Model.DateFilters,
-            _pricing: *Model.PricingMap,
+            summaries: *model.SummaryBuilder,
+            filters: model.DateFilters,
+            _pricing: *model.PricingMap,
             progress: ?std.Progress.Node,
         ) !void {
             var total_timer = try std.time.Timer.start();
@@ -991,7 +991,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
         pub fn streamEvents(
             shared_allocator: std.mem.Allocator,
             temp_allocator: std.mem.Allocator,
-            filters: Model.DateFilters,
+            filters: model.DateFilters,
             consumer: EventConsumer,
         ) !void {
             try collectEvents(shared_allocator, temp_allocator, filters, consumer, null);
@@ -1000,7 +1000,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
         pub fn loadPricingData(
             shared_allocator: std.mem.Allocator,
             temp_allocator: std.mem.Allocator,
-            pricing: *Model.PricingMap,
+            pricing: *model.PricingMap,
         ) !void {
             _ = temp_allocator;
             try ensureFallbackPricing(shared_allocator, pricing);
@@ -1016,14 +1016,14 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
         fn collectEvents(
             shared_allocator: std.mem.Allocator,
             temp_allocator: std.mem.Allocator,
-            filters: Model.DateFilters,
+            filters: model.DateFilters,
             consumer: EventConsumer,
             progress: ?std.Progress.Node,
         ) !void {
             const SharedContext = struct {
                 shared_allocator: std.mem.Allocator,
                 temp_allocator: std.mem.Allocator,
-                filters: Model.DateFilters,
+                filters: model.DateFilters,
                 progress: ?std.Progress.Node,
                 sessions_dir: []const u8,
                 paths: []const []const u8,
@@ -1046,7 +1046,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                     const worker_allocator = worker_arena_state.allocator();
 
                     const timezone_offset = @as(i32, shared.filters.timezone_offset_minutes);
-                    var local_events: std.ArrayList(Model.TokenUsageEvent) = .empty;
+                    var local_events: std.ArrayList(model.TokenUsageEvent) = .empty;
                     defer local_events.deinit(worker_allocator);
 
                     const relative = shared.paths[args.index];
@@ -1190,12 +1190,12 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             file_path: []const u8,
             deduper: ?*MessageDeduper,
             timezone_offset_minutes: i32,
-            events: *std.ArrayList(Model.TokenUsageEvent),
+            events: *std.ArrayList(model.TokenUsageEvent),
         ) !void {
             try PARSE_FN(allocator, &PARSE_CONTEXT, session_id, file_path, deduper, timezone_offset_minutes, events);
         }
 
-        fn ensureFallbackPricing(shared_allocator: std.mem.Allocator, pricing: *Model.PricingMap) !void {
+        fn ensureFallbackPricing(shared_allocator: std.mem.Allocator, pricing: *model.PricingMap) !void {
             for (FALLBACK_PRICING) |fallback| {
                 if (pricing.get(fallback.name) != null) continue;
                 const key = try shared_allocator.dupe(u8, fallback.name);
@@ -1205,8 +1205,8 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
 
         test "pricing parser stores manifest entries" {
             const allocator = std.testing.allocator;
-            var pricing = Model.PricingMap.init(allocator);
-            defer Model.deinitPricingMap(&pricing, allocator);
+            var pricing = model.PricingMap.init(allocator);
+            defer model.deinitPricingMap(&pricing, allocator);
             var alias_buffer: std.ArrayList(u8) = .empty;
             defer alias_buffer.deinit(allocator);
 
@@ -1216,7 +1216,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 .pricing = &pricing,
             };
 
-            const pricing_entry = Model.ModelPricing{
+            const pricing_entry = model.ModelPricing{
                 .input_cost_per_m = 1,
                 .cache_creation_cost_per_m = 1,
                 .cached_input_cost_per_m = 1,

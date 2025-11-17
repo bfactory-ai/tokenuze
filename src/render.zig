@@ -1,5 +1,5 @@
 const std = @import("std");
-const Model = @import("model.zig");
+const model = @import("model.zig");
 
 pub const Renderer = struct {
     const Alignment = enum { left, right };
@@ -37,14 +37,14 @@ pub const Renderer = struct {
         cells: [column_count][]const u8,
     };
 
-    fn usageFieldVisibilityFromTotals(totals: *const Model.SummaryTotals) Model.UsageFieldVisibility {
+    fn usageFieldVisibilityFromTotals(totals: *const model.SummaryTotals) model.UsageFieldVisibility {
         return .{
             .cache_creation = totals.usage.cache_creation_input_tokens > 0,
             .cache_read = totals.usage.cached_input_tokens > 0,
         };
     }
 
-    fn columnUsageFromVisibility(visibility: Model.UsageFieldVisibility) [column_count]bool {
+    fn columnUsageFromVisibility(visibility: model.UsageFieldVisibility) [column_count]bool {
         var active = [_]bool{true} ** column_count;
         active[@intFromEnum(ColumnId.cache_create)] = visibility.cache_creation;
         active[@intFromEnum(ColumnId.cache_read)] = visibility.cache_read;
@@ -53,8 +53,8 @@ pub const Renderer = struct {
 
     pub fn writeJson(
         writer: *std.Io.Writer,
-        summaries: []const Model.DailySummary,
-        totals: *const Model.SummaryTotals,
+        summaries: []const model.DailySummary,
+        totals: *const model.SummaryTotals,
         pretty: bool,
     ) !void {
         const field_visibility = usageFieldVisibilityFromTotals(totals);
@@ -79,8 +79,8 @@ pub const Renderer = struct {
     pub fn writeTable(
         writer: *std.Io.Writer,
         allocator: std.mem.Allocator,
-        summaries: []const Model.DailySummary,
-        totals: *const Model.SummaryTotals,
+        summaries: []const model.DailySummary,
+        totals: *const model.SummaryTotals,
     ) !void {
         if (summaries.len == 0) {
             try writer.writeAll("No usage data found for the selected filters.\n");
@@ -137,8 +137,8 @@ pub const Renderer = struct {
     };
 
     const SummaryArray = struct {
-        items: []const Model.DailySummary,
-        field_visibility: Model.UsageFieldVisibility,
+        items: []const model.DailySummary,
+        field_visibility: model.UsageFieldVisibility,
 
         pub fn jsonStringify(self: SummaryArray, jw: *std.json.Stringify) !void {
             try jw.beginArray();
@@ -153,13 +153,13 @@ pub const Renderer = struct {
     };
 
     const TotalsView = struct {
-        totals: *const Model.SummaryTotals,
-        field_visibility: Model.UsageFieldVisibility,
+        totals: *const model.SummaryTotals,
+        field_visibility: model.UsageFieldVisibility,
 
         pub fn jsonStringify(self: TotalsView, jw: *std.json.Stringify) !void {
             const totals = self.totals;
             try jw.beginObject();
-            try Model.writeUsageJsonFields(jw, totals.usage, totals.display_input_tokens, self.field_visibility);
+            try model.writeUsageJsonFields(jw, totals.usage, totals.display_input_tokens, self.field_visibility);
             try jw.objectField("costUSD");
             try jw.write(totals.cost_usd);
             try jw.objectField("missingPricing");
@@ -169,8 +169,8 @@ pub const Renderer = struct {
     };
 
     const DailySummaryView = struct {
-        summary: *const Model.DailySummary,
-        field_visibility: Model.UsageFieldVisibility,
+        summary: *const model.DailySummary,
+        field_visibility: model.UsageFieldVisibility,
 
         pub fn jsonStringify(self: DailySummaryView, jw: *std.json.Stringify) !void {
             const summary = self.summary;
@@ -179,7 +179,7 @@ pub const Renderer = struct {
             try jw.write(summary.display_date);
             try jw.objectField("isoDate");
             try jw.write(summary.iso_date);
-            try Model.writeUsageJsonFields(jw, summary.usage, summary.display_input_tokens, self.field_visibility);
+            try model.writeUsageJsonFields(jw, summary.usage, summary.display_input_tokens, self.field_visibility);
             try jw.objectField("costUSD");
             try jw.write(summary.cost_usd);
             try jw.objectField("models");
@@ -194,28 +194,28 @@ pub const Renderer = struct {
     };
 
     const ModelMapView = struct {
-        models: []const Model.ModelSummary,
-        field_visibility: Model.UsageFieldVisibility,
+        models: []const model.ModelSummary,
+        field_visibility: model.UsageFieldVisibility,
 
         pub fn jsonStringify(self: ModelMapView, jw: *std.json.Stringify) !void {
             try jw.beginObject();
-            for (self.models) |*model| {
-                try jw.objectField(model.name);
+            for (self.models) |*mod| {
+                try jw.objectField(mod.name);
                 try jw.beginObject();
-                try Model.writeUsageJsonFields(jw, model.usage, model.display_input_tokens, self.field_visibility);
+                try model.writeUsageJsonFields(jw, mod.usage, mod.display_input_tokens, self.field_visibility);
                 try jw.objectField("costUSD");
-                try jw.write(model.cost_usd);
+                try jw.write(mod.cost_usd);
                 try jw.objectField("pricingAvailable");
-                try jw.write(model.pricing_available);
+                try jw.write(mod.pricing_available);
                 try jw.objectField("isFallback");
-                try jw.write(model.is_fallback);
+                try jw.write(mod.is_fallback);
                 try jw.endObject();
             }
             try jw.endObject();
         }
     };
 
-    fn formatRow(allocator: std.mem.Allocator, summary: *const Model.DailySummary) !Row {
+    fn formatRow(allocator: std.mem.Allocator, summary: *const model.DailySummary) !Row {
         var cells: [column_count][]const u8 = undefined;
         cells[0] = summary.display_date;
         cells[1] = try formatModels(allocator, summary.models.items);
@@ -223,7 +223,7 @@ pub const Renderer = struct {
         return Row{ .cells = cells };
     }
 
-    fn formatTotalsRow(allocator: std.mem.Allocator, totals: *const Model.SummaryTotals) !Row {
+    fn formatTotalsRow(allocator: std.mem.Allocator, totals: *const model.SummaryTotals) !Row {
         var cells: [column_count][]const u8 = undefined;
         cells[0] = "TOTAL";
         cells[1] = "-";
@@ -249,7 +249,7 @@ pub const Renderer = struct {
         cells[7] = try formatCurrency(allocator, value.cost_usd);
     }
 
-    fn effectiveInputTokens(usage: Model.TokenUsage, display_override: u64) u64 {
+    fn effectiveInputTokens(usage: model.TokenUsage, display_override: u64) u64 {
         if (display_override > 0) return display_override;
         return usage.input_tokens;
     }
@@ -312,7 +312,7 @@ pub const Renderer = struct {
 
     fn formatModels(
         allocator: std.mem.Allocator,
-        models: []const Model.ModelSummary,
+        models: []const model.ModelSummary,
     ) ![]const u8 {
         if (models.len == 0) {
             return allocator.dupe(u8, "-");
@@ -320,9 +320,9 @@ pub const Renderer = struct {
         var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(allocator);
         const display_count = if (models.len < max_models_in_table) models.len else max_models_in_table;
-        for (models[0..display_count], 0..) |model, idx| {
+        for (models[0..display_count], 0..) |mod, idx| {
             if (idx > 0) try buffer.appendSlice(allocator, ", ");
-            try buffer.appendSlice(allocator, model.name);
+            try buffer.appendSlice(allocator, mod.name);
         }
         if (models.len > max_models_in_table) {
             var suffix_buf: [32]u8 = undefined;

@@ -1,14 +1,29 @@
 const std = @import("std");
-const Model = @import("model.zig");
+const builtin = @import("builtin");
+
+const io_util = @import("io_util.zig");
+pub const machine_id = @import("machine_id.zig");
+const model = @import("model.zig");
+pub const DateFilters = model.DateFilters;
+pub const ParseDateError = model.ParseDateError;
+pub const OutputFormat = model.OutputFormat;
+pub const ModelSummary = model.ModelSummary;
+pub const DailySummary = model.DailySummary;
+pub const SummaryTotals = model.SummaryTotals;
+pub const parseFilterDate = model.parseFilterDate;
 const claude = @import("providers/claude.zig");
 const codex = @import("providers/codex.zig");
 const gemini = @import("providers/gemini.zig");
 const provider = @import("providers/provider.zig");
 const render = @import("render.zig");
-const io_util = @import("io_util.zig");
 const timeutil = @import("time.zig");
-pub const machine_id = @import("machine_id.zig");
+pub const parseTimezoneOffsetMinutes = timeutil.parseTimezoneOffsetMinutes;
+pub const detectLocalTimezoneOffsetMinutes = timeutil.detectLocalTimezoneOffsetMinutes;
+pub const default_timezone_offset_minutes = timeutil.default_timezone_offset_minutes;
+pub const formatTimezoneLabel = timeutil.formatTimezoneLabel;
+const nsToMs = timeutil.nsToMs;
 pub const uploader = @import("upload.zig");
+
 const empty_weekly_json = "{\"weekly\":[]}";
 
 pub const std_options: std.Options = .{
@@ -34,31 +49,19 @@ pub fn logFn(
     std.log.defaultLog(level, scope, format, args);
 }
 
-pub const DateFilters = Model.DateFilters;
-pub const ParseDateError = Model.ParseDateError;
-pub const OutputFormat = Model.OutputFormat;
-pub const ModelSummary = Model.ModelSummary;
-pub const DailySummary = Model.DailySummary;
-pub const SummaryTotals = Model.SummaryTotals;
-pub const parseFilterDate = Model.parseFilterDate;
-pub const parseTimezoneOffsetMinutes = timeutil.parseTimezoneOffsetMinutes;
-pub const detectLocalTimezoneOffsetMinutes = timeutil.detectLocalTimezoneOffsetMinutes;
-pub const DEFAULT_TIMEZONE_OFFSET_MINUTES = timeutil.DEFAULT_TIMEZONE_OFFSET_MINUTES;
-pub const formatTimezoneLabel = timeutil.formatTimezoneLabel;
-
 const CollectFn = *const fn (
     std.mem.Allocator,
     std.mem.Allocator,
-    *Model.SummaryBuilder,
-    Model.DateFilters,
-    *Model.PricingMap,
+    *model.SummaryBuilder,
+    model.DateFilters,
+    *model.PricingMap,
     ?std.Progress.Node,
 ) anyerror!void;
 
 const LoadPricingFn = *const fn (
     std.mem.Allocator,
     std.mem.Allocator,
-    *Model.PricingMap,
+    *model.PricingMap,
 ) anyerror!void;
 
 pub const ProviderSpec = struct {
@@ -90,8 +93,8 @@ pub const providers = [_]ProviderSpec{
 };
 
 const SummaryResult = struct {
-    builder: Model.SummaryBuilder,
-    totals: Model.SummaryTotals,
+    builder: model.SummaryBuilder,
+    totals: model.SummaryTotals,
 
     fn deinit(self: *SummaryResult, allocator: std.mem.Allocator) void {
         self.builder.deinit(allocator);
@@ -183,7 +186,7 @@ pub fn collectUploadReport(
     filters: DateFilters,
     selection: ProviderSelection,
 ) !UploadReport {
-    var recorder = Model.SessionRecorder.init(allocator);
+    var recorder = model.SessionRecorder.init(allocator);
     defer recorder.deinit(allocator);
 
     var summary = try collectSummaryInternal(allocator, filters, selection, false, &recorder);
@@ -279,8 +282,6 @@ fn progressHandle(node: std.Progress.Node) ?std.Progress.Node {
     return if (node.index == .none) null else node;
 }
 
-const nsToMs = timeutil.nsToMs;
-
 fn flushOutput(writer: anytype) !void {
     writer.flush() catch |err| switch (err) {
         error.WriteFailed => {},
@@ -302,17 +303,17 @@ fn collectSummaryInternal(
     filters: DateFilters,
     selection: ProviderSelection,
     enable_progress: bool,
-    session_recorder: ?*Model.SessionRecorder,
+    session_recorder: ?*model.SessionRecorder,
 ) !SummaryResult {
-    var summary_builder = Model.SummaryBuilder.init(allocator);
+    var summary_builder = model.SummaryBuilder.init(allocator);
     errdefer summary_builder.deinit(allocator);
     if (session_recorder) |recorder| summary_builder.attachSessionRecorder(recorder);
 
     var totals = SummaryTotals.init();
     errdefer totals.deinit(allocator);
 
-    var pricing_map = Model.PricingMap.init(allocator);
-    defer Model.deinitPricingMap(&pricing_map, allocator);
+    var pricing_map = model.PricingMap.init(allocator);
+    defer model.deinitPricingMap(&pricing_map, allocator);
 
     const temp_allocator = std.heap.page_allocator;
 
@@ -369,8 +370,8 @@ fn collectSelectedProviders(
     temp_allocator: std.mem.Allocator,
     filters: DateFilters,
     selection: ProviderSelection,
-    summary_builder: *Model.SummaryBuilder,
-    pricing_map: *Model.PricingMap,
+    summary_builder: *model.SummaryBuilder,
+    pricing_map: *model.PricingMap,
     progress_parent: ?*std.Progress.Node,
 ) !void {
     if (selection.isEmpty()) return;
@@ -409,9 +410,9 @@ fn finalizeSummaries(
     allocator: std.mem.Allocator,
     progress_parent: ?*std.Progress.Node,
     summaries: []DailySummary,
-    pricing_map: *Model.PricingMap,
+    pricing_map: *model.PricingMap,
     totals: *SummaryTotals,
-    session_recorder: ?*Model.SessionRecorder,
+    session_recorder: ?*model.SessionRecorder,
 ) !void {
     var missing_set = std.StringHashMap(u8).init(allocator);
     defer missing_set.deinit();
@@ -422,7 +423,7 @@ fn finalizeSummaries(
         defer finishProgressNode(pricing_node);
         const pricing_progress = progressHandle(pricing_node);
         for (summaries) |*summary| {
-            Model.applyPricing(allocator, summary, pricing_map, &missing_set);
+            model.applyPricing(allocator, summary, pricing_map, &missing_set);
             std.sort.pdq(ModelSummary, summary.models.items, {}, modelLessThan);
             if (pricing_progress) |node| std.Progress.Node.completeOne(node);
         }
@@ -453,8 +454,8 @@ fn finalizeSummaries(
         var totals_timer = try std.time.Timer.start();
         const totals_node = startProgressNode(progress_parent, "totals", 0);
         defer finishProgressNode(totals_node);
-        Model.accumulateTotals(summaries, totals);
-        try Model.collectMissingModels(allocator, &missing_set, &totals.missing_pricing);
+        model.accumulateTotals(summaries, totals);
+        try model.collectMissingModels(allocator, &missing_set, &totals.missing_pricing);
         break :blk nsToMs(totals_timer.read());
     };
     std.log.info(
@@ -467,7 +468,7 @@ fn loadPricing(
     allocator: std.mem.Allocator,
     temp_allocator: std.mem.Allocator,
     selection: ProviderSelection,
-    pricing: *Model.PricingMap,
+    pricing: *model.PricingMap,
     progress_parent: ?*std.Progress.Node,
 ) !void {
     var pricing_timer = try std.time.Timer.start();
@@ -529,8 +530,8 @@ fn modelLessThan(_: void, lhs: ModelSummary, rhs: ModelSummary) bool {
 
 fn renderSummaryBuffer(
     allocator: std.mem.Allocator,
-    summaries: []const Model.DailySummary,
-    totals: *const Model.SummaryTotals,
+    summaries: []const model.DailySummary,
+    totals: *const model.SummaryTotals,
     pretty: bool,
 ) ![]u8 {
     var buffer = std.ArrayList(u8).empty;

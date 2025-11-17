@@ -127,7 +127,7 @@ fn parseOptionsIterator(args: anytype) CliError!CliOptions {
     }
 
     if (!timezone_specified) {
-        const fallback_offset = tokenuze.DEFAULT_TIMEZONE_OFFSET_MINUTES;
+        const fallback_offset = tokenuze.default_timezone_offset_minutes;
         const detected = tokenuze.detectLocalTimezoneOffsetMinutes() catch fallback_offset;
         const clamped = std.math.clamp(detected, -12 * 60, 14 * 60);
         options.filters.timezone_offset_minutes = @intCast(clamped);
@@ -149,7 +149,7 @@ pub fn printHelp() !void {
         \\
     , .{});
 
-    const default_tz_offset = tokenuze.detectLocalTimezoneOffsetMinutes() catch tokenuze.DEFAULT_TIMEZONE_OFFSET_MINUTES;
+    const default_tz_offset = tokenuze.detectLocalTimezoneOffsetMinutes() catch tokenuze.default_timezone_offset_minutes;
     var tz_label_buf: [16]u8 = undefined;
     const tz_label = tokenuze.formatTimezoneLabel(&tz_label_buf, default_tz_offset);
 
