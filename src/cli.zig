@@ -417,7 +417,10 @@ test "cli parses defaults with no args" {
     try testing.expect(!options.machine_id);
     try testing.expect(options.filters.output_format == .table);
     try testing.expect(!options.output_explicit);
-    try testing.expectEqual(std.log.Level.info, options.log_level);
+    try testing.expectEqual(
+        if (builtin.mode == .Debug) std.log.Level.debug else std.log.Level.err,
+        options.log_level,
+    );
 }
 
 test "cli parses filters and agent selection" {
