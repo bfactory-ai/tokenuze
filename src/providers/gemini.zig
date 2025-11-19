@@ -15,22 +15,11 @@ const GEMINI_USAGE_FIELDS = [_]provider.UsageFieldDescriptor{
 };
 
 fn recomputeGeminiTotal(usage: *RawUsage) void {
-    usage.total_tokens = addSaturating(
-        addSaturating(
-            addSaturating(
-                addSaturating(usage.input_tokens, usage.cache_creation_input_tokens),
-                usage.cached_input_tokens,
-            ),
-            usage.output_tokens,
-        ),
-        usage.reasoning_output_tokens,
-    );
-}
-
-fn addSaturating(lhs: u64, rhs: u64) u64 {
-    const result = @addWithOverflow(lhs, rhs);
-    if (result[1] == 0) return result[0];
-    return std.math.maxInt(u64);
+    var total = std.math.add(u64, usage.input_tokens, usage.cache_creation_input_tokens, .sat);
+    total = std.math.add(u64, total, usage.cached_input_tokens, .sat);
+    total = std.math.add(u64, total, usage.output_tokens, .sat);
+    total = std.math.add(u64, total, usage.reasoning_output_tokens, .sat);
+    usage.total_tokens = total;
 }
 
 const fallback_pricing = [_]provider.FallbackPricingEntry{
