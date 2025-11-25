@@ -32,8 +32,8 @@ const ProviderExports = provider.makeProvider(.{
 pub const collect = ProviderExports.collect;
 pub const loadPricingData = ProviderExports.loadPricingData;
 
-const ClaudeRecordContext = struct {
-    handler: *ClaudeLineHandler,
+const EventBuilder = struct {
+    handler: *LineHandler,
     allocator: std.mem.Allocator,
     timestamp: ?provider.TimestampInfo = null,
     request_id: ?[]const u8 = null,
@@ -41,28 +41,34 @@ const ClaudeRecordContext = struct {
     usage: ?RawUsage = null,
     type_is_assistant: bool = false,
 
-    fn deinit(self: *ClaudeRecordContext) void {
-        if (self.timestamp) |info| self.allocator.free(info.text);
-        if (self.request_id) |id| self.allocator.free(id);
-        if (self.message_id) |id| self.allocator.free(id);
-        self.timestamp = null;
-        self.request_id = null;
-        self.message_id = null;
+    fn deinit(self: *EventBuilder) void {
+        if (self.timestamp) |info| {
+            self.allocator.free(info.text);
+            self.timestamp = null;
+        }
+        if (self.request_id) |id| {
+            self.allocator.free(id);
+            self.request_id = null;
+        }
+        if (self.message_id) |id| {
+            self.allocator.free(id);
+            self.message_id = null;
+        }
         self.usage = null;
         self.type_is_assistant = false;
     }
 
-    fn replaceSlice(self: *ClaudeRecordContext, dest: *?[]const u8, value: []const u8) !void {
+    fn replaceSlice(self: *EventBuilder, dest: *?[]const u8, value: []const u8) !void {
         if (dest.*) |existing| self.allocator.free(existing);
         dest.* = try self.allocator.dupe(u8, value);
     }
 
-    fn replaceTimestamp(self: *ClaudeRecordContext, info: provider.TimestampInfo) void {
+    fn replaceTimestamp(self: *EventBuilder, info: provider.TimestampInfo) void {
         if (self.timestamp) |existing| self.allocator.free(existing.text);
         self.timestamp = info;
     }
 
-    fn emit(self: *ClaudeRecordContext) !void {
+    fn emit(self: *EventBuilder) !void {
         if (!self.type_is_assistant) return;
         const usage_raw = self.usage orelse return;
         if (!try shouldEmitClaudeMessage(self.handler.deduper, self.request_id, self.message_id)) {
@@ -106,7 +112,7 @@ fn parseClaudeSessionFile(
     var session_label_overridden = false;
     var model_state = ModelState{};
 
-    var handler = ClaudeLineHandler{
+    var handler = LineHandler{
         .ctx = ctx,
         .allocator = allocator,
         .file_path = file_path,
@@ -129,11 +135,11 @@ fn parseClaudeSessionFile(
             .advance_error_message = "error while advancing claude session stream",
         },
         &handler,
-        ClaudeLineHandler.handle,
+        LineHandler.handle,
     );
 }
 
-const ClaudeLineHandler = struct {
+const LineHandler = struct {
     ctx: *const provider.ParseContext,
     allocator: std.mem.Allocator,
     file_path: []const u8,
@@ -144,7 +150,7 @@ const ClaudeLineHandler = struct {
     events: *std.ArrayList(model.TokenUsageEvent),
     model_state: *ModelState,
 
-    fn handle(self: *ClaudeLineHandler, line: []const u8, line_index: usize) !void {
+    fn handle(self: *LineHandler, line: []const u8, line_index: usize) !void {
         self.processLine(line) catch |err| {
             std.log.warn(
                 "{s}: failed to parse claude session file '{s}' line {d} ({s})",
@@ -153,24 +159,24 @@ const ClaudeLineHandler = struct {
         };
     }
 
-    fn processLine(self: *ClaudeLineHandler, line: []const u8) !void {
+    fn processLine(self: *LineHandler, line: []const u8) !void {
         try provider.parseJsonLine(self.allocator, line, self, processRecord);
     }
 
-    fn processRecord(self: *ClaudeLineHandler, allocator: std.mem.Allocator, reader: *std.json.Reader) !void {
-        var record = ClaudeRecordContext{
+    fn processRecord(self: *LineHandler, allocator: std.mem.Allocator, reader: *std.json.Reader) !void {
+        var builder = EventBuilder{
             .handler = self,
             .allocator = self.allocator,
         };
-        defer record.deinit();
+        defer builder.deinit();
 
-        try provider.jsonWalkObject(allocator, reader, &record, parseClaudeRecordField);
-        try record.emit();
+        try provider.jsonWalkObject(allocator, reader, &builder, parseClaudeRecordField);
+        try builder.emit();
     }
 };
 
 fn parseClaudeRecordField(
-    record: *ClaudeRecordContext,
+    builder: *EventBuilder,
     allocator: std.mem.Allocator,
     reader: *std.json.Reader,
     key: []const u8,
@@ -179,9 +185,9 @@ fn parseClaudeRecordField(
         var token = try provider.jsonReadStringToken(allocator, reader);
         defer token.deinit(allocator);
         provider.overrideSessionLabelFromSlice(
-            record.handler.allocator,
-            record.handler.session_label,
-            record.handler.session_label_overridden,
+            builder.handler.allocator,
+            builder.handler.session_label,
+            builder.handler.session_label_overridden,
             token.view(),
         );
         return;
@@ -190,27 +196,27 @@ fn parseClaudeRecordField(
         var token = try provider.jsonReadStringToken(allocator, reader);
         defer token.deinit(allocator);
         const info = try provider.timestampFromSlice(
-            record.handler.allocator,
+            builder.handler.allocator,
             token.view(),
-            record.handler.timezone_offset_minutes,
+            builder.handler.timezone_offset_minutes,
         ) orelse return;
-        record.replaceTimestamp(info);
+        builder.replaceTimestamp(info);
         return;
     }
     if (std.mem.eql(u8, key, "requestId")) {
         var token = try provider.jsonReadStringToken(allocator, reader);
         defer token.deinit(allocator);
-        try record.replaceSlice(&record.request_id, token.view());
+        try builder.replaceSlice(&builder.request_id, token.view());
         return;
     }
     if (std.mem.eql(u8, key, "type")) {
         var token = try provider.jsonReadStringToken(allocator, reader);
         defer token.deinit(allocator);
-        record.type_is_assistant = std.mem.eql(u8, token.view(), "assistant");
+        builder.type_is_assistant = std.mem.eql(u8, token.view(), "assistant");
         return;
     }
     if (std.mem.eql(u8, key, "message")) {
-        try parseClaudeMessageObject(record, allocator, reader);
+        try parseClaudeMessageObject(builder, allocator, reader);
         return;
     }
 
@@ -218,7 +224,7 @@ fn parseClaudeRecordField(
 }
 
 fn parseClaudeMessageObject(
-    record: *ClaudeRecordContext,
+    builder: *EventBuilder,
     allocator: std.mem.Allocator,
     reader: *std.json.Reader,
 ) !void {
@@ -233,11 +239,11 @@ fn parseClaudeMessageObject(
     }
 
     _ = try reader.next();
-    try provider.jsonWalkObject(allocator, reader, record, parseClaudeMessageField);
+    try provider.jsonWalkObject(allocator, reader, builder, parseClaudeMessageField);
 }
 
 fn parseClaudeMessageField(
-    record: *ClaudeRecordContext,
+    builder: *EventBuilder,
     allocator: std.mem.Allocator,
     reader: *std.json.Reader,
     key: []const u8,
@@ -245,20 +251,20 @@ fn parseClaudeMessageField(
     if (std.mem.eql(u8, key, "id")) {
         var token = try provider.jsonReadStringToken(allocator, reader);
         defer token.deinit(allocator);
-        try record.replaceSlice(&record.message_id, token.view());
+        try builder.replaceSlice(&builder.message_id, token.view());
         return;
     }
     if (std.mem.eql(u8, key, "model")) {
         var token = try provider.jsonReadStringToken(allocator, reader);
         defer token.deinit(allocator);
-        _ = record.handler.ctx.captureModel(record.handler.allocator, record.handler.model_state, token) catch |err| {
-            record.handler.ctx.logWarning(record.handler.file_path, "failed to capture model", err);
+        _ = builder.handler.ctx.captureModel(builder.handler.allocator, builder.handler.model_state, token) catch |err| {
+            builder.handler.ctx.logWarning(builder.handler.file_path, "failed to capture model", err);
             return;
         };
         return;
     }
     if (std.mem.eql(u8, key, "usage")) {
-        record.usage = try provider.jsonParseUsageObjectWithDescriptors(allocator, reader, CLAUDE_USAGE_FIELDS[0..]);
+        builder.usage = try provider.jsonParseUsageObjectWithDescriptors(allocator, reader, CLAUDE_USAGE_FIELDS[0..]);
         return;
     }
 
