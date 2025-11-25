@@ -5,7 +5,6 @@ const provider = @import("provider.zig");
 const RawUsage = model.RawTokenUsage;
 const MessageDeduper = provider.MessageDeduper;
 const ModelState = provider.ModelState;
-const TokenSlice = provider.JsonTokenSlice;
 
 const CLAUDE_USAGE_FIELDS = [_]provider.UsageFieldDescriptor{
     .{ .key = "input_tokens", .field = .input_tokens },
