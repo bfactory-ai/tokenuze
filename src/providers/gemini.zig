@@ -4,7 +4,6 @@ const provider = @import("provider.zig");
 
 const RawUsage = model.RawTokenUsage;
 const ModelState = provider.ModelState;
-const TokenSlice = provider.JsonTokenSlice;
 
 const GEMINI_USAGE_FIELDS = [_]provider.UsageFieldDescriptor{
     .{ .key = "input", .field = .input_tokens },
@@ -74,15 +73,20 @@ const GeminiParseState = struct {
     model_state: *ModelState,
 };
 
-const GeminiMessage = struct {
-    timestamp: ?TokenSlice = null,
-    model: ?TokenSlice = null,
+const GeminiMessageContext = struct {
+    state: *GeminiParseState,
+    timestamp: ?provider.TimestampInfo = null,
     usage: ?RawUsage = null,
 
-    fn deinit(self: *GeminiMessage, allocator: std.mem.Allocator) void {
-        if (self.timestamp) |*tok| tok.deinit(allocator);
-        if (self.model) |*tok| tok.deinit(allocator);
-        self.* = .{};
+    fn deinit(self: *GeminiMessageContext) void {
+        self.clearTimestamp();
+    }
+
+    fn clearTimestamp(self: *GeminiMessageContext) void {
+        if (self.timestamp) |info| {
+            self.state.allocator.free(info.text);
+            self.timestamp = null;
+        }
     }
 };
 
@@ -208,29 +212,42 @@ fn parseGeminiMessageObject(
     reader: *std.json.Reader,
     _: usize,
 ) !void {
-    var message = GeminiMessage{};
-    defer message.deinit(allocator);
-    try provider.jsonWalkObject(allocator, reader, &message, parseGeminiMessageField);
-    try emitGeminiMessage(state, &message);
+    var context = GeminiMessageContext{ .state = state };
+    defer context.deinit();
+    try provider.jsonWalkObject(allocator, reader, &context, parseGeminiMessageField);
+    try emitGeminiMessage(&context);
 }
 
 fn parseGeminiMessageField(
-    message: *GeminiMessage,
+    context: *GeminiMessageContext,
     allocator: std.mem.Allocator,
     reader: *std.json.Reader,
     key: []const u8,
 ) !void {
     if (std.mem.eql(u8, key, "timestamp")) {
-        try provider.replaceJsonToken(&message.timestamp, allocator, try provider.jsonReadStringToken(allocator, reader));
+        var token = try provider.jsonReadStringToken(allocator, reader);
+        defer token.deinit(allocator);
+        context.clearTimestamp();
+        const info = try provider.timestampFromSlice(
+            context.state.allocator,
+            token.view(),
+            context.state.timezone_offset_minutes,
+        ) orelse return;
+        context.timestamp = info;
         return;
     }
     if (std.mem.eql(u8, key, "model")) {
-        try provider.replaceJsonToken(&message.model, allocator, try provider.jsonReadStringToken(allocator, reader));
+        var token = try provider.jsonReadStringToken(allocator, reader);
+        defer token.deinit(allocator);
+        _ = context.state.ctx.captureModel(context.state.allocator, context.state.model_state, token) catch |err| {
+            context.state.ctx.logWarning(context.state.file_path, "failed to capture model", err);
+            return;
+        };
         return;
     }
     if (std.mem.eql(u8, key, "tokens")) {
-        message.usage = try provider.jsonParseUsageObjectWithDescriptors(allocator, reader, GEMINI_USAGE_FIELDS[0..]);
-        if (message.usage) |*usage| {
+        context.usage = try provider.jsonParseUsageObjectWithDescriptors(allocator, reader, GEMINI_USAGE_FIELDS[0..]);
+        if (context.usage) |*usage| {
             recomputeGeminiTotal(usage);
         }
         return;
@@ -239,41 +256,31 @@ fn parseGeminiMessageField(
     try reader.skipValue();
 }
 
-fn emitGeminiMessage(state: *GeminiParseState, message: *GeminiMessage) !void {
-    const usage_raw = message.usage orelse return;
+fn emitGeminiMessage(context: *GeminiMessageContext) !void {
+    const usage_raw = context.usage orelse return;
 
-    _ = state.ctx.captureModel(state.allocator, state.model_state, message.model) catch |err| {
-        state.ctx.logWarning(state.file_path, "failed to capture model", err);
-        return;
-    };
-
-    var delta = model.TokenUsage.deltaFrom(usage_raw, state.previous_totals.*);
-    state.ctx.normalizeUsageDelta(&delta);
-    state.previous_totals.* = usage_raw;
+    var delta = model.TokenUsage.deltaFrom(usage_raw, context.state.previous_totals.*);
+    context.state.ctx.normalizeUsageDelta(&delta);
+    context.state.previous_totals.* = usage_raw;
 
     if (!provider.shouldEmitUsage(delta)) {
         return;
     }
 
-    const resolved_model = (try state.ctx.requireModel(state.allocator, state.model_state, null)) orelse return;
-
-    const timestamp_token = message.timestamp orelse return;
-    const timestamp_info = try provider.timestampFromSlice(
-        state.allocator,
-        timestamp_token.view(),
-        state.timezone_offset_minutes,
-    ) orelse return;
+    const resolved_model = (try context.state.ctx.requireModel(context.state.allocator, context.state.model_state, null)) orelse return;
+    const timestamp_info = context.timestamp orelse return;
 
     const event = model.TokenUsageEvent{
-        .session_id = state.session_label.*,
+        .session_id = context.state.session_label.*,
         .timestamp = timestamp_info.text,
         .local_iso_date = timestamp_info.local_iso_date,
         .model = resolved_model.name,
         .usage = delta,
         .is_fallback = resolved_model.is_fallback,
-        .display_input_tokens = state.ctx.computeDisplayInput(delta),
+        .display_input_tokens = context.state.ctx.computeDisplayInput(delta),
     };
-    try state.events.append(state.allocator, event);
+    try context.state.events.append(context.state.allocator, event);
+    context.timestamp = null;
 }
 
 test "gemini parser converts message totals into usage deltas" {
