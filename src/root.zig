@@ -109,6 +109,35 @@ pub const UploadReport = struct {
     }
 };
 
+pub const PricingCache = struct {
+    map: model.PricingMap,
+    loaded_mask: u64 = 0,
+
+    pub fn init(allocator: std.mem.Allocator) PricingCache {
+        return .{ .map = model.PricingMap.init(allocator), .loaded_mask = 0 };
+    }
+
+    pub fn deinit(self: *PricingCache, allocator: std.mem.Allocator) void {
+        model.deinitPricingMap(&self.map, allocator);
+        self.* = undefined;
+    }
+
+    pub fn ensureLoaded(
+        self: *PricingCache,
+        allocator: std.mem.Allocator,
+        temp_allocator: std.mem.Allocator,
+        selection: ProviderSelection,
+        progress_parent: ?*std.Progress.Node,
+    ) !void {
+        const missing_mask = selection.mask & ~self.loaded_mask;
+        if (missing_mask == 0) return;
+
+        const missing_selection = ProviderSelection{ .mask = missing_mask };
+        try loadPricing(allocator, temp_allocator, missing_selection, &self.map, progress_parent);
+        self.loaded_mask |= missing_mask;
+    }
+};
+
 const provider_count = providers.len;
 comptime {
     if (provider_count == 0) @compileError("tokenuze requires at least one provider");
@@ -170,7 +199,7 @@ pub fn run(allocator: std.mem.Allocator, filters: DateFilters, selection: Provid
 }
 
 pub fn renderSummaryAlloc(allocator: std.mem.Allocator, filters: DateFilters, selection: ProviderSelection) ![]u8 {
-    var summary = try collectSummaryInternal(allocator, filters, selection, false, null);
+    var summary = try collectSummaryInternal(allocator, filters, selection, false, null, null);
     defer summary.deinit(allocator);
     return try renderSummaryBuffer(allocator, summary.builder.items(), &summary.totals, filters.pretty_output);
 }
@@ -180,10 +209,21 @@ pub fn collectUploadReport(
     filters: DateFilters,
     selection: ProviderSelection,
 ) !UploadReport {
+    var cache = PricingCache.init(allocator);
+    defer cache.deinit(allocator);
+    return try collectUploadReportWithCache(allocator, filters, selection, &cache);
+}
+
+pub fn collectUploadReportWithCache(
+    allocator: std.mem.Allocator,
+    filters: DateFilters,
+    selection: ProviderSelection,
+    cache: *PricingCache,
+) !UploadReport {
     var recorder = model.SessionRecorder.init(allocator);
     defer recorder.deinit(allocator);
 
-    var summary = try collectSummaryInternal(allocator, filters, selection, false, &recorder);
+    var summary = try collectSummaryInternal(allocator, filters, selection, false, &recorder, cache);
     defer summary.deinit(allocator);
 
     const daily_json = try renderSummaryBuffer(allocator, summary.builder.items(), &summary.totals, filters.pretty_output);
@@ -285,7 +325,7 @@ fn collectSummary(
     selection: ProviderSelection,
     enable_progress: bool,
 ) !SummaryResult {
-    return collectSummaryInternal(allocator, filters, selection, enable_progress, null);
+    return collectSummaryInternal(allocator, filters, selection, enable_progress, null, null);
 }
 
 fn collectSummaryInternal(
@@ -294,6 +334,7 @@ fn collectSummaryInternal(
     selection: ProviderSelection,
     enable_progress: bool,
     session_recorder: ?*model.SessionRecorder,
+    pricing_cache: ?*PricingCache,
 ) !SummaryResult {
     var summary_builder = model.SummaryBuilder.init(allocator);
     errdefer summary_builder.deinit(allocator);
@@ -302,8 +343,8 @@ fn collectSummaryInternal(
     var totals = SummaryTotals.init();
     errdefer totals.deinit(allocator);
 
-    var pricing_map = model.PricingMap.init(allocator);
-    defer model.deinitPricingMap(&pricing_map, allocator);
+    var owned_pricing_map: model.PricingMap = undefined;
+    var owns_pricing_map = false;
 
     const temp_allocator = std.heap.page_allocator;
 
@@ -319,9 +360,20 @@ fn collectSummaryInternal(
 
     var total_timer = try std.time.Timer.start();
 
-    if (!selection.isEmpty()) {
-        try loadPricing(allocator, temp_allocator, selection, &pricing_map, progress_parent);
-    }
+    const pricing_map = blk: {
+        if (pricing_cache) |cache| {
+            try cache.ensureLoaded(allocator, temp_allocator, selection, progress_parent);
+            break :blk &cache.map;
+        } else {
+            owns_pricing_map = true;
+            owned_pricing_map = model.PricingMap.init(allocator);
+            if (!selection.isEmpty()) {
+                try loadPricing(allocator, temp_allocator, selection, &owned_pricing_map, progress_parent);
+            }
+            break :blk &owned_pricing_map;
+        }
+    };
+    defer if (owns_pricing_map) model.deinitPricingMap(pricing_map, allocator);
 
     try collectSelectedProviders(
         allocator,
@@ -343,7 +395,7 @@ fn collectSummaryInternal(
         allocator,
         progress_parent,
         summaries,
-        &pricing_map,
+        pricing_map,
         &totals,
         session_recorder,
     );
