@@ -35,7 +35,7 @@ pub fn run(
 
     const machine = try machine_id.getMachineId(allocator);
     const machine_slice = machine[0..];
-    std.log.info("Machine ID: {s}", .{machine_slice});
+    std.log.debug("Machine ID: {s}", .{machine_slice});
 
     if (providers.len == 0) return error.NoProvidersSelected;
 
@@ -154,7 +154,7 @@ fn buildUploadPayload(
         .timezone = timezone_label,
         .providers = providers,
     };
-    std.log.info("Payload timestamp (UTC): {s} | timezone: {s}", .{ timestamp, timezone_label });
+    std.log.debug("Payload timestamp (UTC): {s} | timezone: {s}", .{ timestamp, timezone_label });
 
     var buffer = std.ArrayList(u8).empty;
     defer buffer.deinit(allocator);

@@ -996,12 +996,12 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             try collectEvents(shared_allocator, temp_allocator, filters, consumer, events_progress);
             const after_events = summaries.eventCount();
             if (events_progress) |node| std.Progress.Node.end(node);
-            std.log.info(
+            std.log.debug(
                 "{s}.collectEvents produced {d} new events in {d:.2}ms",
                 .{ provider_name, after_events - before_events, nsToMs(events_timer.read()) },
             );
 
-            std.log.info(
+            std.log.debug(
                 "{s}.collect completed in {d:.2}ms",
                 .{ provider_name, nsToMs(total_timer.read()) },
             );
@@ -1156,7 +1156,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                     std.Progress.Node.setEstimatedTotalItems(node, 0);
                     std.Progress.Node.setCompletedItems(node, 0);
                 }
-                std.log.info("{s}.collectEvents: scanned 0 files in {d:.2}ms", .{ provider_name, nsToMs(timer.read()) });
+                std.log.debug("{s}.collectEvents: scanned 0 files in {d:.2}ms", .{ provider_name, nsToMs(timer.read()) });
                 return;
             }
 
@@ -1197,7 +1197,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             group.wait(io);
             const final_completed = completed.load(.acquire);
 
-            std.log.info(
+            std.log.debug(
                 "{s}.collectEvents: scanned {d} files in {d:.2}ms",
                 .{ provider_name, final_completed, nsToMs(timer.read()) },
             );

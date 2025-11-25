@@ -417,7 +417,7 @@ fn finalizeSummaries(
         }
         break :blk nsToMs(pricing_timer.read());
     };
-    std.log.info(
+    std.log.debug(
         "phase.apply_pricing completed in {d:.2}ms (days={d})",
         .{ pricing_elapsed, summaries.len },
     );
@@ -433,7 +433,7 @@ fn finalizeSummaries(
         std.sort.pdq(DailySummary, summaries, {}, summaryLessThan);
         break :blk nsToMs(sort_timer.read());
     };
-    std.log.info(
+    std.log.debug(
         "phase.sort_days completed in {d:.2}ms (days={d})",
         .{ sort_elapsed, summaries.len },
     );
@@ -446,7 +446,7 @@ fn finalizeSummaries(
         try model.collectMissingModels(allocator, &missing_set, &totals.missing_pricing);
         break :blk nsToMs(totals_timer.read());
     };
-    std.log.info(
+    std.log.debug(
         "phase.totals completed in {d:.2}ms (missing_pricing={d})",
         .{ totals_elapsed, totals.missing_pricing.items.len },
     );
@@ -473,13 +473,13 @@ fn loadPricing(
                 .{ remote_stats.elapsed_ms, @errorName(err) },
             );
         } else {
-            std.log.info(
+            std.log.debug(
                 "pricing.remote_fetch completed in {d:.2}ms (models += {d})",
                 .{ remote_stats.elapsed_ms, remote_stats.models_added },
             );
         }
     } else {
-        std.log.info("pricing.remote_fetch skipped (already loaded)", .{});
+        std.log.debug("pricing.remote_fetch skipped (already loaded)", .{});
     }
 
     if (!remote_stats.satisfied) {
@@ -494,12 +494,12 @@ fn loadPricing(
         }
         const fallback_elapsed = nsToMs(fallback_timer.read());
         const fallback_added = pricing.count() - (before_models + remote_stats.models_added);
-        std.log.info(
+        std.log.debug(
             "pricing.fallback ensured in {d:.2}ms (models += {d})",
             .{ fallback_elapsed, fallback_added },
         );
     } else {
-        std.log.info("pricing.fallback skipped (remote pricing satisfied)", .{});
+        std.log.debug("pricing.fallback skipped (remote pricing satisfied)", .{});
     }
 
     std.log.info(
