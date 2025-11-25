@@ -1194,9 +1194,8 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             const timezone_offset = @as(i32, filters.timezone_offset_minutes);
             const worker_count = blk: {
                 const cpu_count = std.Thread.getCpuCount() catch 1;
-                const clamped = if (cpu_count == 0) 1 else cpu_count;
-                const limited = @min(relative_paths.items.len, clamped);
-                break :blk if (limited == 0) 1 else limited;
+                const clamped = @max(1, cpu_count);
+                break :blk @min(relative_paths.items.len, clamped);
             };
 
             var work_index = std.atomic.Value(usize).init(0);
