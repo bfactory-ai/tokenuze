@@ -52,7 +52,6 @@ const CollectFn = *const fn (
     std.mem.Allocator,
     *model.SummaryBuilder,
     model.DateFilters,
-    *model.PricingMap,
     ?std.Progress.Node,
 ) anyerror!void;
 
@@ -331,7 +330,6 @@ fn collectSummaryInternal(
         filters,
         selection,
         &summary_builder,
-        &pricing_map,
         progress_parent,
     );
 
@@ -363,7 +361,6 @@ fn collectSelectedProviders(
     filters: DateFilters,
     selection: ProviderSelection,
     summary_builder: *model.SummaryBuilder,
-    pricing_map: *model.PricingMap,
     progress_parent: ?*std.Progress.Node,
 ) !void {
     if (selection.isEmpty()) return;
@@ -379,7 +376,7 @@ fn collectSelectedProviders(
             var collect_timer = try std.time.Timer.start();
             const phase_node = startProgressNode(progress_parent, prov.phase_label, 0);
             defer finishProgressNode(phase_node);
-            try prov.collect(allocator, temp_allocator, summary_builder, filters, pricing_map, progressHandle(phase_node));
+            try prov.collect(allocator, temp_allocator, summary_builder, filters, progressHandle(phase_node));
             break :blk .{
                 .elapsed = nsToMs(collect_timer.read()),
                 .events_added = summary_builder.eventCount() - before_events,

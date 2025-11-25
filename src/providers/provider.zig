@@ -980,11 +980,9 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             temp_allocator: std.mem.Allocator,
             summaries: *model.SummaryBuilder,
             filters: model.DateFilters,
-            _pricing: *model.PricingMap,
             progress: ?std.Progress.Node,
         ) !void {
             var total_timer = try std.time.Timer.start();
-            _ = _pricing;
 
             if (progress) |node| std.Progress.Node.setEstimatedTotalItems(node, 1);
 
