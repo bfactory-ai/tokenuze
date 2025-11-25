@@ -73,28 +73,17 @@ const EventBuilder = struct {
         if (!try shouldEmitClaudeMessage(self.handler.deduper, self.request_id, self.message_id)) {
             return;
         }
-        const timestamp_info = self.timestamp orelse return;
-
-        const resolved_model = (try self.handler.ctx.requireModel(
+        const usage = model.TokenUsage.fromRaw(usage_raw);
+        try provider.emitUsageEventWithTimestamp(
+            self.handler.ctx,
             self.handler.allocator,
             self.handler.model_state,
+            self.handler.sink,
+            self.handler.session_label.*,
+            &self.timestamp,
+            usage,
             null,
-        )) orelse return;
-
-        const usage = model.TokenUsage.fromRaw(usage_raw);
-        if (!provider.shouldEmitUsage(usage)) return;
-
-        const event = model.TokenUsageEvent{
-            .session_id = self.handler.session_label.*,
-            .timestamp = timestamp_info.text,
-            .local_iso_date = timestamp_info.local_iso_date,
-            .model = resolved_model.name,
-            .usage = usage,
-            .is_fallback = resolved_model.is_fallback,
-            .display_input_tokens = self.handler.ctx.computeDisplayInput(usage),
-        };
-        try self.handler.sink.emit(event);
-        self.timestamp = null;
+        );
     }
 };
 

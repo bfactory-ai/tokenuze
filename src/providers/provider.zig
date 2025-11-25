@@ -176,6 +176,33 @@ pub fn timestampFromSlice(
     return .{ .text = duplicate, .local_iso_date = iso_date };
 }
 
+pub fn emitUsageEventWithTimestamp(
+    ctx: *const ParseContext,
+    allocator: std.mem.Allocator,
+    state: *ModelState,
+    sink: EventSink,
+    session_label: []const u8,
+    timestamp_slot: *?TimestampInfo,
+    usage: model.TokenUsage,
+    raw_model: anytype,
+) !void {
+    if (!shouldEmitUsage(usage)) return;
+    const timestamp_info = timestamp_slot.* orelse return;
+    const resolved = (try ctx.requireModel(allocator, state, raw_model)) orelse return;
+    timestamp_slot.* = null;
+
+    const event = model.TokenUsageEvent{
+        .session_id = session_label,
+        .timestamp = timestamp_info.text,
+        .local_iso_date = timestamp_info.local_iso_date,
+        .model = resolved.name,
+        .usage = usage,
+        .is_fallback = resolved.is_fallback,
+        .display_input_tokens = ctx.computeDisplayInput(usage),
+    };
+    try sink.emit(event);
+}
+
 pub fn overrideSessionLabelFromSlice(
     allocator: std.mem.Allocator,
     session_label: *[]const u8,

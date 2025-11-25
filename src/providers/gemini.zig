@@ -263,25 +263,16 @@ fn emitMessage(context: *MessageContext) !void {
     context.state.ctx.normalizeUsageDelta(&delta);
     context.state.previous_totals.* = usage_raw;
 
-    if (!provider.shouldEmitUsage(delta)) {
-        return;
-    }
-
-    const resolved_model = (try context.state.ctx.requireModel(context.state.allocator, context.state.model_state, null)) orelse return;
-    const timestamp_info = context.timestamp orelse return;
-
-    const event = model.TokenUsageEvent{
-        .session_id = context.state.session_label.*,
-        .timestamp = timestamp_info.text,
-        .local_iso_date = timestamp_info.local_iso_date,
-        .model = resolved_model.name,
-        .usage = delta,
-        .is_fallback = resolved_model.is_fallback,
-        .display_input_tokens = context.state.ctx.computeDisplayInput(delta),
-    };
-    try context.state.sink.emit(event);
-    // Transfer timestamp ownership to the appended event to avoid double-free.
-    context.timestamp = null;
+    try provider.emitUsageEventWithTimestamp(
+        context.state.ctx,
+        context.state.allocator,
+        context.state.model_state,
+        context.state.sink,
+        context.state.session_label.*,
+        &context.timestamp,
+        delta,
+        null,
+    );
 }
 
 test "gemini parser converts message totals into usage deltas" {
