@@ -46,11 +46,15 @@ pub fn main() !void {
         var uploads = std.ArrayList(tokenuze.uploader.ProviderUpload).empty;
         defer uploads.deinit(allocator);
 
+        var pricing_cache = tokenuze.PricingCache.init(allocator);
+        defer pricing_cache.deinit(allocator);
+        try pricing_cache.ensureLoaded(allocator, std.heap.page_allocator, options.providers, null);
+
         for (tokenuze.providers, 0..) |provider, idx| {
             if (!options.providers.includesIndex(idx)) continue;
             var single = tokenuze.ProviderSelection.initEmpty();
             single.includeIndex(idx);
-            var report = try tokenuze.collectUploadReport(allocator, options.filters, single);
+            var report = try tokenuze.collectUploadReportWithCache(allocator, options.filters, single, &pricing_cache);
             const entry = tokenuze.uploader.ProviderUpload{
                 .name = provider.name,
                 .daily_summary = report.daily_json,
