@@ -369,7 +369,7 @@ pub const EventListCollector = struct {
     }
 
     fn emit(ctx_ptr: *anyopaque, event: model.TokenUsageEvent) anyerror!void {
-        const self = @as(*EventListCollector, @ptrCast(@alignCast(ctx_ptr)));
+        const self: *EventListCollector = @ptrCast(@alignCast(ctx_ptr));
         try self.list.append(self.allocator, event);
     }
 };
@@ -971,7 +971,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             event: *const model.TokenUsageEvent,
             filters: model.DateFilters,
         ) anyerror!void {
-            const ctx = @as(*SummaryConsumer, @ptrCast(@alignCast(ctx_ptr)));
+            const ctx: *SummaryConsumer = @ptrCast(@alignCast(ctx_ptr));
             try ctx.builder.ingest(allocator, event, filters);
         }
 
@@ -1073,26 +1073,21 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                     const worker_allocator = worker_arena_state.allocator();
 
                     const timezone_offset = @as(i32, shared.filters.timezone_offset_minutes);
-                    const SinkContext = struct {
-                        shared: *SharedContext,
-
-                        fn emit(ctx_ptr: *anyopaque, event: model.TokenUsageEvent) anyerror!void {
-                            const Self = @This();
-                            const ctx = @as(*Self, @ptrCast(@alignCast(ctx_ptr)));
-                            if (ctx.shared.consumer.mutex) |mutex| mutex.lock();
-                            defer if (ctx.shared.consumer.mutex) |mutex| mutex.unlock();
-                            try ctx.shared.consumer.ingest(
-                                ctx.shared.consumer.context,
-                                ctx.shared.shared_allocator,
-                                &event,
-                                ctx.shared.filters,
-                            );
-                        }
-                    };
-                    var forwarder = SinkContext{ .shared = shared };
                     const sink = EventSink{
-                        .context = &forwarder,
-                        .emitFn = SinkContext.emit,
+                        .context = shared,
+                        .emitFn = struct {
+                            fn emit(ctx_ptr: *anyopaque, event: model.TokenUsageEvent) anyerror!void {
+                                const ctx: *SharedContext = @ptrCast(@alignCast(ctx_ptr));
+                                if (ctx.consumer.mutex) |mutex| mutex.lock();
+                                defer if (ctx.consumer.mutex) |mutex| mutex.unlock();
+                                try ctx.consumer.ingest(
+                                    ctx.consumer.context,
+                                    ctx.shared_allocator,
+                                    &event,
+                                    ctx.filters,
+                                );
+                            }
+                        }.emit,
                     };
 
                     const relative = shared.paths[args.index];
