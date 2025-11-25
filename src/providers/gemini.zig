@@ -254,6 +254,13 @@ fn parseMessageField(
 fn emitMessage(context: *MessageContext) !void {
     const usage_raw = context.usage orelse return;
 
+    if (context.state.previous_totals.*) |prev| {
+        if (std.meta.eql(prev, usage_raw)) {
+            context.state.previous_totals.* = usage_raw;
+            return;
+        }
+    }
+
     var delta = model.TokenUsage.deltaFrom(usage_raw, context.state.previous_totals.*);
     context.state.ctx.normalizeUsageDelta(&delta);
     context.state.previous_totals.* = usage_raw;
