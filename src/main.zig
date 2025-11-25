@@ -55,7 +55,6 @@ pub fn main() !void {
                 .name = provider.name,
                 .daily_summary = report.daily_json,
                 .sessions_summary = report.sessions_json,
-                .weekly_summary = report.weekly_json,
             };
             uploads.append(allocator, entry) catch |err| {
                 report.deinit(allocator);
@@ -71,7 +70,6 @@ pub fn main() !void {
         defer for (uploads.items) |entry| {
             allocator.free(entry.daily_summary);
             allocator.free(entry.sessions_summary);
-            allocator.free(entry.weekly_summary);
         };
         try tokenuze.uploader.run(
             allocator,

@@ -9,7 +9,6 @@ pub const ProviderUpload = struct {
     name: []const u8,
     daily_summary: []const u8,
     sessions_summary: []const u8,
-    weekly_summary: []const u8,
 };
 
 const DEFAULT_API_URL = "http://localhost:8000";
@@ -223,9 +222,6 @@ const Payload = struct {
             try jw.objectField("daily");
             const trimmed_daily = std.mem.trim(u8, provider.daily_summary, " \n\r\t");
             try jw.write(RawJson{ .text = trimmed_daily });
-            try jw.objectField("weekly");
-            const trimmed_weekly = std.mem.trim(u8, provider.weekly_summary, " \n\r\t");
-            try jw.write(RawJson{ .text = trimmed_weekly });
             try jw.endObject();
         }
 

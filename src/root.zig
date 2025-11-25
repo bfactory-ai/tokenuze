@@ -24,8 +24,6 @@ pub const formatTimezoneLabel = timeutil.formatTimezoneLabel;
 const nsToMs = timeutil.nsToMs;
 pub const uploader = @import("upload.zig");
 
-const empty_weekly_json = "{\"weekly\":[]}";
-
 pub const std_options: std.Options = .{
     // Compile debug logs so they can be enabled dynamically at runtime.
     .log_level = .debug,
@@ -105,12 +103,10 @@ const SummaryResult = struct {
 pub const UploadReport = struct {
     daily_json: []u8,
     sessions_json: []u8,
-    weekly_json: []u8,
 
     pub fn deinit(self: *UploadReport, allocator: std.mem.Allocator) void {
         allocator.free(self.daily_json);
         allocator.free(self.sessions_json);
-        allocator.free(self.weekly_json);
         self.* = undefined;
     }
 };
@@ -198,13 +194,9 @@ pub fn collectUploadReport(
     const sessions_json = try recorder.renderJson(allocator);
     errdefer allocator.free(sessions_json);
 
-    const weekly_json = try allocator.dupe(u8, empty_weekly_json);
-    errdefer allocator.free(weekly_json);
-
     return UploadReport{
         .daily_json = daily_json,
         .sessions_json = sessions_json,
-        .weekly_json = weekly_json,
     };
 }
 
