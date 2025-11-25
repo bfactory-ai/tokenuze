@@ -280,6 +280,7 @@ fn emitGeminiMessage(context: *GeminiMessageContext) !void {
         .display_input_tokens = context.state.ctx.computeDisplayInput(delta),
     };
     try context.state.events.append(context.state.allocator, event);
+    // Transfer timestamp ownership to the appended event to avoid double-free.
     context.timestamp = null;
 }
 
