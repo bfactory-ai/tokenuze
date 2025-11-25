@@ -946,15 +946,14 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             ingest: *const fn (*anyopaque, std.mem.Allocator, *const model.TokenUsageEvent, model.DateFilters) anyerror!void,
         };
 
-        const PARSE_CONTEXT = ParseContext{
+        const parse_context = ParseContext{
             .provider_name = provider_name,
             .legacy_fallback_model = legacy_fallback_model,
             .cached_counts_overlap_input = cfg.cached_counts_overlap_input,
         };
-        const PARSE_FN = cfg.parse_session_fn;
-        const JSON_EXT = cfg.session_file_ext;
-        const FALLBACK_PRICING = fallback_pricing;
-        const REQUIRES_DEDUPER = cfg.requires_deduper;
+        const parse_fn = cfg.parse_session_fn;
+        const json_ext = cfg.session_file_ext;
+        const requires_deduper = cfg.requires_deduper;
 
         const SummaryConsumer = struct {
             builder: *model.SummaryBuilder,
@@ -1021,7 +1020,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             shared_allocator: std.mem.Allocator,
             pricing: *model.PricingMap,
         ) !void {
-            for (FALLBACK_PRICING) |fallback| {
+            for (fallback_pricing) |fallback| {
                 if (pricing.get(fallback.name) != null) continue;
                 const key = try shared_allocator.dupe(u8, fallback.name);
                 try pricing.put(key, fallback.pricing);
@@ -1096,8 +1095,8 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                     };
                     defer worker_allocator.free(absolute_path);
 
-                    if (relative.len <= JSON_EXT.len or !std.mem.endsWith(u8, relative, JSON_EXT)) return;
-                    const session_id_slice = relative[0 .. relative.len - JSON_EXT.len];
+                    if (relative.len <= json_ext.len or !std.mem.endsWith(u8, relative, json_ext)) return;
+                    const session_id_slice = relative[0 .. relative.len - json_ext.len];
 
                     const maybe_session_id = duplicateNonEmpty(worker_allocator, session_id_slice) catch {
                         return;
@@ -1147,7 +1146,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             while (try walker.next()) |entry| {
                 if (entry.kind != .file) continue;
                 const relative_path = std.mem.sliceTo(entry.path, 0);
-                if (!std.mem.endsWith(u8, relative_path, JSON_EXT)) continue;
+                if (!std.mem.endsWith(u8, relative_path, json_ext)) continue;
                 const copy = try shared_allocator.dupe(u8, relative_path);
                 try relative_paths.append(shared_allocator, copy);
             }
@@ -1169,7 +1168,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
 
             var deduper_storage: ?MessageDeduper = null;
             defer if (deduper_storage) |*ded| ded.deinit();
-            if (REQUIRES_DEDUPER) {
+            if (requires_deduper) {
                 deduper_storage = try MessageDeduper.init(temp_allocator);
             }
 
@@ -1218,7 +1217,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             timezone_offset_minutes: i32,
             sink: EventSink,
         ) !void {
-            try PARSE_FN(allocator, &PARSE_CONTEXT, session_id, file_path, deduper, timezone_offset_minutes, sink);
+            try parse_fn(allocator, &parse_context, session_id, file_path, deduper, timezone_offset_minutes, sink);
         }
 
         test "pricing parser stores manifest entries" {
