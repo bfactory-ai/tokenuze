@@ -343,9 +343,6 @@ fn collectSummaryInternal(
     var totals = SummaryTotals.init();
     errdefer totals.deinit(allocator);
 
-    var temp_pricing_map: ?model.PricingMap = null;
-    defer if (temp_pricing_map) |*map| model.deinitPricingMap(map, allocator);
-
     const temp_allocator = std.heap.page_allocator;
 
     var progress_root: std.Progress.Node = undefined;
@@ -360,17 +357,20 @@ fn collectSummaryInternal(
 
     var total_timer = try std.time.Timer.start();
 
+    var temp_pricing_map: ?model.PricingMap = null;
+    defer if (temp_pricing_map) |*map| model.deinitPricingMap(map, allocator);
+
     const pricing_map: *model.PricingMap = blk: {
         if (pricing_cache) |cache| {
             try cache.ensureLoaded(allocator, temp_allocator, selection, progress_parent);
             break :blk &cache.map;
-        } else {
-            temp_pricing_map = .init(allocator);
-            if (!selection.isEmpty()) {
-                try loadPricing(allocator, temp_allocator, selection, &temp_pricing_map.?, progress_parent);
-            }
-            break :blk &temp_pricing_map.?;
         }
+
+        temp_pricing_map = .init(allocator);
+        if (!selection.isEmpty()) {
+            try loadPricing(allocator, temp_allocator, selection, &temp_pricing_map.?, progress_parent);
+        }
+        break :blk &temp_pricing_map.?;
     };
 
     try collectSelectedProviders(
@@ -389,14 +389,7 @@ fn collectSummaryInternal(
         return SummaryResult{ .builder = summary_builder, .totals = totals };
     }
 
-    try finalizeSummaries(
-        allocator,
-        progress_parent,
-        summaries,
-        pricing_map,
-        &totals,
-        session_recorder,
-    );
+    try finalizeSummaries(allocator, progress_parent, summaries, pricing_map, &totals, session_recorder);
 
     std.log.info("phase.total runtime {d:.2}ms", .{nsToMs(total_timer.read())});
     if (enable_progress) std.Progress.setStatus(.success);
