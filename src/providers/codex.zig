@@ -62,7 +62,7 @@ fn parseCodexSessionFile(
     file_path: []const u8,
     deduper: ?*provider.MessageDeduper,
     timezone_offset_minutes: i32,
-    events: *std.ArrayList(model.TokenUsageEvent),
+    sink: provider.EventSink,
 ) !void {
     _ = deduper;
     var previous_totals: ?RawUsage = null;
@@ -73,7 +73,7 @@ fn parseCodexSessionFile(
         .allocator = allocator,
         .file_path = file_path,
         .session_id = session_id,
-        .events = events,
+        .sink = sink,
         .previous_totals = &previous_totals,
         .model_state = &model_state,
         .timezone_offset_minutes = timezone_offset_minutes,
@@ -99,7 +99,7 @@ const CodexLineHandler = struct {
     allocator: std.mem.Allocator,
     file_path: []const u8,
     session_id: []const u8,
-    events: *std.ArrayList(model.TokenUsageEvent),
+    sink: provider.EventSink,
     previous_totals: *?RawUsage,
     model_state: *ModelState,
     timezone_offset_minutes: i32,
@@ -192,7 +192,7 @@ const CodexLineHandler = struct {
             .is_fallback = resolved.is_fallback,
             .display_input_tokens = self.ctx.computeDisplayInput(delta),
         };
-        try self.events.append(self.allocator, event);
+        try self.sink.emit(event);
     }
 };
 
@@ -338,6 +338,8 @@ test "codex parser emits usage events from token_count entries" {
 
     var events = std.ArrayList(model.TokenUsageEvent){};
     defer events.deinit(worker_allocator);
+    var sink_adapter = provider.ArrayListEventSink.init(&events, worker_allocator);
+    const sink = sink_adapter.asSink();
 
     const ctx = provider.ParseContext{
         .provider_name = "codex-test",
@@ -352,7 +354,7 @@ test "codex parser emits usage events from token_count entries" {
         "fixtures/codex/basic.jsonl",
         null,
         0,
-        &events,
+        sink,
     );
 
     try std.testing.expectEqual(@as(usize, 1), events.items.len);

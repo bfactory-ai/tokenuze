@@ -347,6 +347,33 @@ fn streamJsonDocumentInternal(
     try handler(handler_context, line_slice, 1);
 }
 
+pub const EventSink = struct {
+    context: *anyopaque,
+    emitFn: *const fn (*anyopaque, model.TokenUsageEvent) anyerror!void,
+
+    pub fn emit(self: EventSink, event: model.TokenUsageEvent) !void {
+        try self.emitFn(self.context, event);
+    }
+};
+
+pub const ArrayListEventSink = struct {
+    allocator: std.mem.Allocator,
+    list: *std.ArrayList(model.TokenUsageEvent),
+
+    pub fn init(list: *std.ArrayList(model.TokenUsageEvent), allocator: std.mem.Allocator) ArrayListEventSink {
+        return .{ .allocator = allocator, .list = list };
+    }
+
+    pub fn asSink(self: *ArrayListEventSink) EventSink {
+        return .{ .context = self, .emitFn = ArrayListEventSink.emit };
+    }
+
+    fn emit(ctx_ptr: *anyopaque, event: model.TokenUsageEvent) anyerror!void {
+        const self = @as(*ArrayListEventSink, @ptrCast(@alignCast(ctx_ptr)));
+        try self.list.append(self.allocator, event);
+    }
+};
+
 pub const ParseSessionFn = *const fn (
     allocator: std.mem.Allocator,
     ctx: *const ParseContext,
@@ -354,7 +381,7 @@ pub const ParseSessionFn = *const fn (
     file_path: []const u8,
     deduper: ?*MessageDeduper,
     timezone_offset_minutes: i32,
-    events: *std.ArrayList(model.TokenUsageEvent),
+    sink: EventSink,
 ) anyerror!void;
 
 pub const ProviderConfig = struct {
@@ -1046,8 +1073,28 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                     const worker_allocator = worker_arena_state.allocator();
 
                     const timezone_offset = @as(i32, shared.filters.timezone_offset_minutes);
-                    var local_events: std.ArrayList(model.TokenUsageEvent) = .empty;
-                    defer local_events.deinit(worker_allocator);
+                    const SinkContext = struct {
+                        shared: *SharedContext,
+
+                        fn emit(ctx_ptr: *anyopaque, event: model.TokenUsageEvent) anyerror!void {
+                            const Self = @This();
+                            const ctx = @as(*Self, @ptrCast(@alignCast(ctx_ptr)));
+                            if (ctx.shared.consumer.mutex) |mutex| mutex.lock();
+                            defer if (ctx.shared.consumer.mutex) |mutex| mutex.unlock();
+                            var temp_event = event;
+                            try ctx.shared.consumer.ingest(
+                                ctx.shared.consumer.context,
+                                ctx.shared.shared_allocator,
+                                &temp_event,
+                                ctx.shared.filters,
+                            );
+                        }
+                    };
+                    var forwarder = SinkContext{ .shared = shared };
+                    const sink = EventSink{
+                        .context = &forwarder,
+                        .emitFn = SinkContext.emit,
+                    };
 
                     const relative = shared.paths[args.index];
                     const absolute_path = std.fs.path.join(worker_allocator, &.{ shared.sessions_dir, relative }) catch |err| {
@@ -1074,21 +1121,11 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                         absolute_path,
                         shared.deduper,
                         timezone_offset,
-                        &local_events,
+                        sink,
                     ) catch |err| {
                         logSessionWarning(absolute_path, "failed to parse session file", err);
                         return;
                     };
-
-                    if (local_events.items.len == 0) return;
-
-                    if (shared.consumer.mutex) |mutex| mutex.lock();
-                    defer if (shared.consumer.mutex) |mutex| mutex.unlock();
-                    for (local_events.items) |*event| {
-                        shared.consumer.ingest(shared.consumer.context, shared.shared_allocator, event, shared.filters) catch {
-                            return;
-                        };
-                    }
                 }
             };
 
@@ -1190,9 +1227,9 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             file_path: []const u8,
             deduper: ?*MessageDeduper,
             timezone_offset_minutes: i32,
-            events: *std.ArrayList(model.TokenUsageEvent),
+            sink: EventSink,
         ) !void {
-            try PARSE_FN(allocator, &PARSE_CONTEXT, session_id, file_path, deduper, timezone_offset_minutes, events);
+            try PARSE_FN(allocator, &PARSE_CONTEXT, session_id, file_path, deduper, timezone_offset_minutes, sink);
         }
 
         fn ensureFallbackPricing(shared_allocator: std.mem.Allocator, pricing: *model.PricingMap) !void {

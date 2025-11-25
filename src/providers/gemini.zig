@@ -68,7 +68,7 @@ const GeminiParseState = struct {
     session_label: *[]const u8,
     session_label_overridden: *bool,
     timezone_offset_minutes: i32,
-    events: *std.ArrayList(model.TokenUsageEvent),
+    sink: provider.EventSink,
     previous_totals: *?RawUsage,
     model_state: *ModelState,
 };
@@ -97,7 +97,7 @@ fn parseGeminiSessionFile(
     file_path: []const u8,
     deduper: ?*provider.MessageDeduper,
     timezone_offset_minutes: i32,
-    events: *std.ArrayList(model.TokenUsageEvent),
+    sink: provider.EventSink,
 ) !void {
     _ = deduper;
     var session_label = session_id;
@@ -112,7 +112,7 @@ fn parseGeminiSessionFile(
         .session_label = &session_label,
         .session_label_overridden = &session_label_overridden,
         .timezone_offset_minutes = timezone_offset_minutes,
-        .events = events,
+        .sink = sink,
         .previous_totals = &previous_totals,
         .model_state = &model_state,
     };
@@ -142,7 +142,7 @@ const GeminiLineHandler = struct {
     session_label: *[]const u8,
     session_label_overridden: *bool,
     timezone_offset_minutes: i32,
-    events: *std.ArrayList(model.TokenUsageEvent),
+    sink: provider.EventSink,
     previous_totals: *?RawUsage,
     model_state: *ModelState,
 
@@ -163,7 +163,7 @@ const GeminiLineHandler = struct {
             .session_label = self.session_label,
             .session_label_overridden = self.session_label_overridden,
             .timezone_offset_minutes = self.timezone_offset_minutes,
-            .events = self.events,
+            .sink = self.sink,
             .previous_totals = self.previous_totals,
             .model_state = self.model_state,
         };
@@ -279,7 +279,7 @@ fn emitGeminiMessage(context: *GeminiMessageContext) !void {
         .is_fallback = resolved_model.is_fallback,
         .display_input_tokens = context.state.ctx.computeDisplayInput(delta),
     };
-    try context.state.events.append(context.state.allocator, event);
+    try context.state.sink.emit(event);
     // Transfer timestamp ownership to the appended event to avoid double-free.
     context.timestamp = null;
 }
@@ -292,6 +292,8 @@ test "gemini parser converts message totals into usage deltas" {
 
     var events: std.ArrayList(model.TokenUsageEvent) = .empty;
     defer events.deinit(worker_allocator);
+    var sink_adapter = provider.ArrayListEventSink.init(&events, worker_allocator);
+    const sink = sink_adapter.asSink();
 
     const ctx = provider.ParseContext{
         .provider_name = "gemini-test",
@@ -306,7 +308,7 @@ test "gemini parser converts message totals into usage deltas" {
         "fixtures/gemini/basic.json",
         null,
         0,
-        &events,
+        sink,
     );
 
     try std.testing.expectEqual(@as(usize, 1), events.items.len);
