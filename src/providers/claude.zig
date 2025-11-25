@@ -277,10 +277,10 @@ fn shouldEmitClaudeMessage(
     message_id: ?[]const u8,
 ) !bool {
     const dedupe = deduper orelse return true;
-    const message = message_id orelse return true;
-    const request = request_id orelse return true;
-    var hash = std.hash.Wyhash.hash(0, message);
-    hash = std.hash.Wyhash.hash(hash, request);
+    const msg_id = message_id orelse return true;
+    const req_id = request_id orelse return true;
+    var hash = std.hash.Wyhash.hash(0, msg_id);
+    hash = std.hash.Wyhash.hash(hash, req_id);
     return try dedupe.mark(hash);
 }
 
