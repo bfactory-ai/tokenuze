@@ -176,6 +176,46 @@ pub fn timestampFromSlice(
     return .{ .text = duplicate, .local_iso_date = iso_date };
 }
 
+pub fn updateTimestampFromReader(
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    timezone_offset_minutes: i32,
+    slot: *?TimestampInfo,
+) !void {
+    var token = try jsonReadStringToken(allocator, reader);
+    defer token.deinit(allocator);
+    const info = try timestampFromSlice(allocator, token.view(), timezone_offset_minutes) orelse return;
+    if (slot.*) |existing| allocator.free(existing.text);
+    slot.* = info;
+}
+
+pub fn emitUsageEventWithTimestamp(
+    ctx: *const ParseContext,
+    allocator: std.mem.Allocator,
+    state: *ModelState,
+    sink: EventSink,
+    session_label: []const u8,
+    timestamp_slot: *?TimestampInfo,
+    usage: model.TokenUsage,
+    raw_model: anytype,
+) !void {
+    if (!shouldEmitUsage(usage)) return;
+    const timestamp_info = timestamp_slot.* orelse return;
+    const resolved = (try ctx.requireModel(allocator, state, raw_model)) orelse return;
+    timestamp_slot.* = null;
+
+    const event = model.TokenUsageEvent{
+        .session_id = session_label,
+        .timestamp = timestamp_info.text,
+        .local_iso_date = timestamp_info.local_iso_date,
+        .model = resolved.name,
+        .usage = usage,
+        .is_fallback = resolved.is_fallback,
+        .display_input_tokens = ctx.computeDisplayInput(usage),
+    };
+    try sink.emit(event);
+}
+
 pub fn overrideSessionLabelFromSlice(
     allocator: std.mem.Allocator,
     session_label: *[]const u8,
@@ -188,6 +228,17 @@ pub fn overrideSessionLabelFromSlice(
         session_label.* = dup;
         if (overridden) |flag| flag.* = true;
     }
+}
+
+pub fn overrideSessionLabelFromReader(
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    session_label: *[]const u8,
+    overridden: ?*bool,
+) !void {
+    var token = try jsonReadStringToken(allocator, reader);
+    defer token.deinit(allocator);
+    overrideSessionLabelFromSlice(allocator, session_label, overridden, token.view());
 }
 
 pub const UsageValueMode = enum {
@@ -859,6 +910,26 @@ pub fn jsonWalkObject(
     }
 }
 
+pub fn jsonWalkOptionalObject(
+    allocator: std.mem.Allocator,
+    reader: *std.json.Reader,
+    context: anytype,
+    comptime handler: fn (@TypeOf(context), std.mem.Allocator, *std.json.Reader, []const u8) anyerror!void,
+) !void {
+    const peek = try reader.peekNextTokenType();
+    if (peek == .null) {
+        _ = try reader.next();
+        return;
+    }
+    if (peek != .object_begin) {
+        try reader.skipValue();
+        return;
+    }
+
+    _ = try reader.next();
+    try jsonWalkObject(allocator, reader, context, handler);
+}
+
 pub fn jsonWalkArrayObjects(
     allocator: std.mem.Allocator,
     reader: *std.json.Reader,
@@ -1053,70 +1124,6 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 consumer: EventConsumer,
             };
 
-            const ProcessArgs = struct {
-                index: usize,
-            };
-
-            const ProcessFn = struct {
-                fn run(shared: *SharedContext, args: ProcessArgs) void {
-                    const previous = shared.completed.fetchAdd(1, .acq_rel);
-                    defer if (shared.progress) |node| node.setCompletedItems(previous + 1);
-
-                    var worker_arena_state = std.heap.ArenaAllocator.init(shared.temp_allocator);
-                    defer worker_arena_state.deinit();
-                    const worker_allocator = worker_arena_state.allocator();
-
-                    const timezone_offset = @as(i32, shared.filters.timezone_offset_minutes);
-                    const sink = EventSink{
-                        .context = shared,
-                        .emitFn = struct {
-                            fn emit(ctx_ptr: *anyopaque, event: model.TokenUsageEvent) anyerror!void {
-                                const ctx: *SharedContext = @ptrCast(@alignCast(ctx_ptr));
-                                if (ctx.consumer.mutex) |mutex| mutex.lock();
-                                defer if (ctx.consumer.mutex) |mutex| mutex.unlock();
-                                try ctx.consumer.ingest(
-                                    ctx.consumer.context,
-                                    ctx.shared_allocator,
-                                    &event,
-                                    ctx.filters,
-                                );
-                            }
-                        }.emit,
-                    };
-
-                    const relative = shared.paths[args.index];
-                    const absolute_path = std.fs.path.join(worker_allocator, &.{ shared.sessions_dir, relative }) catch |err| {
-                        std.log.warn("{s}.collectEvents: unable to build path for '{s}' ({s})", .{
-                            provider_name,
-                            relative,
-                            @errorName(err),
-                        });
-                        return;
-                    };
-                    defer worker_allocator.free(absolute_path);
-
-                    if (relative.len <= json_ext.len or !std.mem.endsWith(u8, relative, json_ext)) return;
-                    const session_id_slice = relative[0 .. relative.len - json_ext.len];
-
-                    const maybe_session_id = duplicateNonEmpty(worker_allocator, session_id_slice) catch {
-                        return;
-                    };
-                    const session_id = maybe_session_id orelse return;
-
-                    parseSessionFile(
-                        worker_allocator,
-                        session_id,
-                        absolute_path,
-                        shared.deduper,
-                        timezone_offset,
-                        sink,
-                    ) catch |err| {
-                        logSessionWarning(absolute_path, "failed to parse session file", err);
-                        return;
-                    };
-                }
-            };
-
             var timer = try std.time.Timer.start();
 
             const sessions_dir = resolveSessionsDir(shared_allocator) catch |err| {
@@ -1184,17 +1191,114 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 .consumer = consumer,
             };
 
-            var threaded: std.Io.Threaded = .init(temp_allocator);
-            defer threaded.deinit();
+            const timezone_offset = @as(i32, filters.timezone_offset_minutes);
+            const worker_count = blk: {
+                const cpu_count = std.Thread.getCpuCount() catch 1;
+                const clamped = @max(1, cpu_count);
+                break :blk @min(relative_paths.items.len, clamped);
+            };
 
-            const io = threaded.io();
-            var group = std.Io.Group.init;
+            var work_index = std.atomic.Value(usize).init(0);
 
-            for (relative_paths.items, 0..) |_, idx| {
-                group.async(io, ProcessFn.run, .{ &shared, .{ .index = idx } });
+            const WorkerArgs = struct {
+                shared: *SharedContext,
+                work_index: *std.atomic.Value(usize),
+                timezone_offset: i32,
+            };
+
+            const Worker = struct {
+                fn run(args: WorkerArgs) void {
+                    var worker_arena_state = std.heap.ArenaAllocator.init(args.shared.temp_allocator);
+                    defer worker_arena_state.deinit();
+                    const worker_allocator = worker_arena_state.allocator();
+
+                    const sink = EventSink{
+                        .context = args.shared,
+                        .emitFn = struct {
+                            fn emit(ctx_ptr: *anyopaque, event: model.TokenUsageEvent) anyerror!void {
+                                const ctx: *SharedContext = @ptrCast(@alignCast(ctx_ptr));
+                                if (ctx.consumer.mutex) |mutex| mutex.lock();
+                                defer if (ctx.consumer.mutex) |mutex| mutex.unlock();
+                                try ctx.consumer.ingest(
+                                    ctx.consumer.context,
+                                    ctx.shared_allocator,
+                                    &event,
+                                    ctx.filters,
+                                );
+                            }
+                        }.emit,
+                    };
+
+                    while (true) {
+                        const idx = args.work_index.fetchAdd(1, .acq_rel);
+                        if (idx >= args.shared.paths.len) break;
+
+                        _ = worker_arena_state.reset(.retain_capacity);
+                        processPath(args.shared, worker_allocator, sink, args.timezone_offset, idx);
+
+                        const finished = args.shared.completed.fetchAdd(1, .acq_rel) + 1;
+                        if (args.shared.progress) |node| node.setCompletedItems(finished);
+                    }
+                }
+
+                fn processPath(
+                    shared_ctx: *SharedContext,
+                    worker_allocator: std.mem.Allocator,
+                    sink: EventSink,
+                    tz_offset: i32,
+                    idx: usize,
+                ) void {
+                    const relative = shared_ctx.paths[idx];
+                    const absolute_path = std.fs.path.join(worker_allocator, &.{ shared_ctx.sessions_dir, relative }) catch |err| {
+                        std.log.warn("{s}.collectEvents: unable to build path for '{s}' ({s})", .{
+                            provider_name,
+                            relative,
+                            @errorName(err),
+                        });
+                        return;
+                    };
+                    defer worker_allocator.free(absolute_path);
+
+                    if (relative.len <= json_ext.len or !std.mem.endsWith(u8, relative, json_ext)) return;
+                    const session_id_slice = relative[0 .. relative.len - json_ext.len];
+
+                    const maybe_session_id = duplicateNonEmpty(worker_allocator, session_id_slice) catch {
+                        return;
+                    };
+                    const session_id = maybe_session_id orelse return;
+
+                    parseSessionFile(
+                        worker_allocator,
+                        session_id,
+                        absolute_path,
+                        shared_ctx.deduper,
+                        tz_offset,
+                        sink,
+                    ) catch |err| {
+                        logSessionWarning(absolute_path, "failed to parse session file", err);
+                        return;
+                    };
+                }
+            };
+
+            const worker_args = WorkerArgs{
+                .shared = &shared,
+                .work_index = &work_index,
+                .timezone_offset = timezone_offset,
+            };
+
+            if (worker_count == 1) {
+                Worker.run(worker_args);
+            } else {
+                const threads = try shared_allocator.alloc(std.Thread, worker_count);
+                defer shared_allocator.free(threads);
+
+                for (threads) |*thread| {
+                    thread.* = try std.Thread.spawn(.{}, Worker.run, .{worker_args});
+                }
+                for (threads) |thread| thread.join();
             }
 
-            group.wait(io);
             const final_completed = completed.load(.acquire);
 
             std.log.debug(

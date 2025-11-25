@@ -179,13 +179,11 @@ fn parseRootField(
     key: []const u8,
 ) !void {
     if (std.mem.eql(u8, key, "sessionId")) {
-        var token = try provider.jsonReadStringToken(allocator, reader);
-        defer token.deinit(allocator);
-        provider.overrideSessionLabelFromSlice(
+        try provider.overrideSessionLabelFromReader(
             allocator,
+            reader,
             state.session_label,
             state.session_label_overridden,
-            token.view(),
         );
         return;
     }
@@ -225,15 +223,12 @@ fn parseMessageField(
     key: []const u8,
 ) !void {
     if (std.mem.eql(u8, key, "timestamp")) {
-        var token = try provider.jsonReadStringToken(allocator, reader);
-        defer token.deinit(allocator);
-        context.clearTimestamp();
-        const info = try provider.timestampFromSlice(
+        try provider.updateTimestampFromReader(
             context.state.allocator,
-            token.view(),
+            reader,
             context.state.timezone_offset_minutes,
-        ) orelse return;
-        context.timestamp = info;
+            &context.timestamp,
+        );
         return;
     }
     if (std.mem.eql(u8, key, "model")) {
@@ -259,29 +254,26 @@ fn parseMessageField(
 fn emitMessage(context: *MessageContext) !void {
     const usage_raw = context.usage orelse return;
 
+    if (context.state.previous_totals.*) |prev| {
+        if (std.meta.eql(prev, usage_raw)) {
+            return;
+        }
+    }
+
     var delta = model.TokenUsage.deltaFrom(usage_raw, context.state.previous_totals.*);
     context.state.ctx.normalizeUsageDelta(&delta);
     context.state.previous_totals.* = usage_raw;
 
-    if (!provider.shouldEmitUsage(delta)) {
-        return;
-    }
-
-    const resolved_model = (try context.state.ctx.requireModel(context.state.allocator, context.state.model_state, null)) orelse return;
-    const timestamp_info = context.timestamp orelse return;
-
-    const event = model.TokenUsageEvent{
-        .session_id = context.state.session_label.*,
-        .timestamp = timestamp_info.text,
-        .local_iso_date = timestamp_info.local_iso_date,
-        .model = resolved_model.name,
-        .usage = delta,
-        .is_fallback = resolved_model.is_fallback,
-        .display_input_tokens = context.state.ctx.computeDisplayInput(delta),
-    };
-    try context.state.sink.emit(event);
-    // Transfer timestamp ownership to the appended event to avoid double-free.
-    context.timestamp = null;
+    try provider.emitUsageEventWithTimestamp(
+        context.state.ctx,
+        context.state.allocator,
+        context.state.model_state,
+        context.state.sink,
+        context.state.session_label.*,
+        &context.timestamp,
+        delta,
+        null,
+    );
 }
 
 test "gemini parser converts message totals into usage deltas" {

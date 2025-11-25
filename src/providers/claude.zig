@@ -62,39 +62,23 @@ const EventBuilder = struct {
         dest.* = try self.allocator.dupe(u8, value);
     }
 
-    fn replaceTimestamp(self: *EventBuilder, info: provider.TimestampInfo) void {
-        if (self.timestamp) |existing| self.allocator.free(existing.text);
-        self.timestamp = info;
-    }
-
     fn emit(self: *EventBuilder) !void {
         if (!self.type_is_assistant) return;
         const usage_raw = self.usage orelse return;
         if (!try shouldEmitClaudeMessage(self.handler.deduper, self.request_id, self.message_id)) {
             return;
         }
-        const timestamp_info = self.timestamp orelse return;
-
-        const resolved_model = (try self.handler.ctx.requireModel(
+        const usage = model.TokenUsage.fromRaw(usage_raw);
+        try provider.emitUsageEventWithTimestamp(
+            self.handler.ctx,
             self.handler.allocator,
             self.handler.model_state,
+            self.handler.sink,
+            self.handler.session_label.*,
+            &self.timestamp,
+            usage,
             null,
-        )) orelse return;
-
-        const usage = model.TokenUsage.fromRaw(usage_raw);
-        if (!provider.shouldEmitUsage(usage)) return;
-
-        const event = model.TokenUsageEvent{
-            .session_id = self.handler.session_label.*,
-            .timestamp = timestamp_info.text,
-            .local_iso_date = timestamp_info.local_iso_date,
-            .model = resolved_model.name,
-            .usage = usage,
-            .is_fallback = resolved_model.is_fallback,
-            .display_input_tokens = self.handler.ctx.computeDisplayInput(usage),
-        };
-        try self.handler.sink.emit(event);
-        self.timestamp = null;
+        );
     }
 };
 
@@ -181,25 +165,21 @@ fn parseClaudeRecordField(
     key: []const u8,
 ) !void {
     if (std.mem.eql(u8, key, "sessionId")) {
-        var token = try provider.jsonReadStringToken(allocator, reader);
-        defer token.deinit(allocator);
-        provider.overrideSessionLabelFromSlice(
+        try provider.overrideSessionLabelFromReader(
             builder.handler.allocator,
+            reader,
             builder.handler.session_label,
             builder.handler.session_label_overridden,
-            token.view(),
         );
         return;
     }
     if (std.mem.eql(u8, key, "timestamp")) {
-        var token = try provider.jsonReadStringToken(allocator, reader);
-        defer token.deinit(allocator);
-        const info = try provider.timestampFromSlice(
+        try provider.updateTimestampFromReader(
             builder.handler.allocator,
-            token.view(),
+            reader,
             builder.handler.timezone_offset_minutes,
-        ) orelse return;
-        builder.replaceTimestamp(info);
+            &builder.timestamp,
+        );
         return;
     }
     if (std.mem.eql(u8, key, "requestId")) {
@@ -227,18 +207,7 @@ fn parseClaudeMessageObject(
     allocator: std.mem.Allocator,
     reader: *std.json.Reader,
 ) !void {
-    const peek = try reader.peekNextTokenType();
-    if (peek == .null) {
-        _ = try reader.next();
-        return;
-    }
-    if (peek != .object_begin) {
-        try reader.skipValue();
-        return;
-    }
-
-    _ = try reader.next();
-    try provider.jsonWalkObject(allocator, reader, builder, parseClaudeMessageField);
+    try provider.jsonWalkOptionalObject(allocator, reader, builder, parseClaudeMessageField);
 }
 
 fn parseClaudeMessageField(
