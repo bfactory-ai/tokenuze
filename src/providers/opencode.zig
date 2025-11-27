@@ -259,9 +259,12 @@ fn determineSessionIdentifier(
     file_path: []const u8,
 ) ![]const u8 {
     _ = ctx;
-    const from_metadata = readSessionIdentifier(allocator, file_path) catch null;
-    if (from_metadata) |value| return value;
-    return try deriveSessionNameFromPath(allocator, file_path);
+    if (readSessionIdentifier(allocator, file_path) catch null) |value| return value;
+    const base = std.fs.path.basename(file_path);
+    if (std.mem.endsWith(u8, base, ".json")) {
+        return allocator.dupe(u8, base[0 .. base.len - 5]);
+    }
+    return allocator.dupe(u8, base);
 }
 
 fn readSessionIdentifier(allocator: std.mem.Allocator, file_path: []const u8) !?[]const u8 {
@@ -292,19 +295,6 @@ fn readSessionIdentifier(allocator: std.mem.Allocator, file_path: []const u8) !?
         }
     }.handle);
     return identifier;
-}
-
-fn deriveSessionNameFromPath(allocator: std.mem.Allocator, file_path: []const u8) ![]const u8 {
-    const backslash_index = std.mem.lastIndexOfScalar(u8, file_path, '\\');
-    const slash_index = std.mem.lastIndexOfScalar(u8, file_path, '/');
-    var start: usize = 0;
-    if (backslash_index) |idx| start = idx + 1;
-    if (slash_index) |idx| start = @max(start, idx + 1);
-    const base = file_path[start..];
-    if (std.mem.endsWith(u8, base, ".json")) {
-        return allocator.dupe(u8, base[0 .. base.len - 5]);
-    }
-    return allocator.dupe(u8, base);
 }
 
 fn buildMessageDirPath(
