@@ -68,7 +68,7 @@ const MessageRecord = struct {
             return;
         }
         if (std.mem.eql(u8, key, "time")) {
-            try walkTimeObject(self, allocator, reader);
+            try provider.jsonWalkOptionalObject(allocator, reader, self, handleTimeField);
             return;
         }
         if (std.mem.eql(u8, key, "tokens")) {
@@ -82,7 +82,7 @@ const MessageRecord = struct {
             return;
         }
         if (std.mem.eql(u8, key, "model")) {
-            try walkModelObject(self, allocator, reader);
+            try provider.jsonWalkOptionalObject(allocator, reader, self, handleModelField);
             return;
         }
         try reader.skipValue();
@@ -93,22 +93,6 @@ const MessageRecord = struct {
         const trimmed = std.mem.trim(u8, raw, " \r\n\t");
         if (trimmed.len == 0) return;
         self.model_name = try self.allocator.dupe(u8, trimmed);
-    }
-
-    fn walkTimeObject(self: *MessageRecord, allocator: std.mem.Allocator, reader: *std.json.Reader) !void {
-        const peek = try reader.peekNextTokenType();
-        switch (peek) {
-            .null => {
-                _ = try reader.next();
-                return;
-            },
-            .object_begin => _ = try reader.next(),
-            else => {
-                try reader.skipValue();
-                return;
-            },
-        }
-        try provider.jsonWalkObject(allocator, reader, self, handleTimeField);
     }
 
     fn handleTimeField(self: *MessageRecord, allocator: std.mem.Allocator, reader: *std.json.Reader, key: []const u8) !void {
@@ -145,7 +129,7 @@ const MessageRecord = struct {
 
     fn handleTokensField(self: *MessageRecord, allocator: std.mem.Allocator, reader: *std.json.Reader, key: []const u8) !void {
         if (std.mem.eql(u8, key, "cache")) {
-            try walkCache(self, allocator, reader);
+            try provider.jsonWalkOptionalObject(allocator, reader, self, handleCacheField);
             return;
         }
         const value = try provider.jsonParseU64Value(allocator, reader);
@@ -158,22 +142,6 @@ const MessageRecord = struct {
         }
     }
 
-    fn walkCache(self: *MessageRecord, allocator: std.mem.Allocator, reader: *std.json.Reader) !void {
-        const peek = try reader.peekNextTokenType();
-        switch (peek) {
-            .null => {
-                _ = try reader.next();
-                return;
-            },
-            .object_begin => _ = try reader.next(),
-            else => {
-                try reader.skipValue();
-                return;
-            },
-        }
-        try provider.jsonWalkObject(allocator, reader, self, handleCacheField);
-    }
-
     fn handleCacheField(self: *MessageRecord, allocator: std.mem.Allocator, reader: *std.json.Reader, key: []const u8) !void {
         const value = try provider.jsonParseU64Value(allocator, reader);
         if (std.mem.eql(u8, key, "read")) {
@@ -181,22 +149,6 @@ const MessageRecord = struct {
         } else if (std.mem.eql(u8, key, "write")) {
             self.counts.cache_write = value;
         }
-    }
-
-    fn walkModelObject(self: *MessageRecord, allocator: std.mem.Allocator, reader: *std.json.Reader) !void {
-        const peek = try reader.peekNextTokenType();
-        switch (peek) {
-            .null => {
-                _ = try reader.next();
-                return;
-            },
-            .object_begin => _ = try reader.next(),
-            else => {
-                try reader.skipValue();
-                return;
-            },
-        }
-        try provider.jsonWalkObject(allocator, reader, self, handleModelField);
     }
 
     fn handleModelField(self: *MessageRecord, allocator: std.mem.Allocator, reader: *std.json.Reader, key: []const u8) !void {
