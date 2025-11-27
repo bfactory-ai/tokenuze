@@ -132,22 +132,24 @@ const MessageRecord = struct {
             try provider.jsonWalkOptionalObject(allocator, reader, self, handleCacheField);
             return;
         }
-        const value = try provider.jsonParseU64Value(allocator, reader);
         if (std.mem.eql(u8, key, "input")) {
-            self.counts.input = value;
+            self.counts.input = try provider.jsonParseU64Value(allocator, reader);
         } else if (std.mem.eql(u8, key, "output")) {
-            self.counts.output = value;
+            self.counts.output = try provider.jsonParseU64Value(allocator, reader);
         } else if (std.mem.eql(u8, key, "reasoning")) {
-            self.counts.reasoning = value;
+            self.counts.reasoning = try provider.jsonParseU64Value(allocator, reader);
+        } else {
+            try reader.skipValue();
         }
     }
 
     fn handleCacheField(self: *MessageRecord, allocator: std.mem.Allocator, reader: *std.json.Reader, key: []const u8) !void {
-        const value = try provider.jsonParseU64Value(allocator, reader);
         if (std.mem.eql(u8, key, "read")) {
-            self.counts.cache_read = value;
+            self.counts.cache_read = try provider.jsonParseU64Value(allocator, reader);
         } else if (std.mem.eql(u8, key, "write")) {
-            self.counts.cache_write = value;
+            self.counts.cache_write = try provider.jsonParseU64Value(allocator, reader);
+        } else {
+            try reader.skipValue();
         }
     }
 
