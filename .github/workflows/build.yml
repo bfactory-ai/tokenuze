@@ -23,20 +23,14 @@ jobs:
             platform: linux
             target: x86_64-linux-musl
             zig-version: master
-            install: sudo apt-get update && sudo apt-get install -y sqlite3
-            shell: bash
           - os: macos-latest
             platform: macos
             target: aarch64-macos
             zig-version: master
-            install: brew install sqlite
-            shell: bash
           - os: windows-latest
             platform: windows
             target: x86_64-windows-gnu
             zig-version: master
-            install: winget install --id SQLite.sqlite -e --accept-source-agreements --accept-package-agreements
-            shell: pwsh
 
     runs-on: ${{ matrix.os }}
 
@@ -51,10 +45,18 @@ jobs:
         with:
           version: ${{ matrix.zig-version }}
 
-      - name: Install sqlite
-        shell: ${{ matrix.shell }}
-        run: ${{ matrix.install }}
+      - name: Install sqlite (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+
+      - name: Install sqlite (macOS)
+        if: runner.os == 'macOS'
+        run: brew install sqlite
+
+      - name: Install sqlite (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: winget install --id SQLite.sqlite -e --accept-source-agreements --accept-package-agreements
 
       - name: Build ${{ matrix.platform }}
-        shell: ${{ matrix.shell }}
         run: zig build -Dtarget=${{ matrix.target }}
