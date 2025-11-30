@@ -19,6 +19,9 @@ jobs:
         with:
           version: master
 
+      - name: Install sqlite
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+
       - name: Unit tests
         run: zig build test
 
@@ -51,6 +54,16 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: master
+
+      - name: Install sqlite
+        shell: bash
+        run: |
+          set -e
+          case "${{ matrix.platform }}" in
+            linux) sudo apt-get update && sudo apt-get install -y sqlite3 ;;
+            macos) brew install sqlite ;;
+            windows) choco install sqlite ;;
+          esac
 
       - name: Build ${{ matrix.platform }}
         run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast

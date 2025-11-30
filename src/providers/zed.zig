@@ -98,11 +98,16 @@ fn runSqliteQuery(allocator: std.mem.Allocator, db_path: []const u8) ![]u8 {
     const query = "select id, updated_at, data_type, hex(data) as data_hex from threads";
     var argv = [_][]const u8{ "sqlite3", "-json", db_path, query };
 
-    var result = try std.process.Child.run(.{
+    var result = std.process.Child.run(.{
         .allocator = allocator,
         .argv = &argv,
         .max_output_bytes = 64 * 1024 * 1024,
-    });
+    }) catch |err| {
+        if (err == error.FileNotFound) {
+            std.log.err("zed: sqlite3 CLI not found; install sqlite3 to enable Zed ingestion", .{});
+        }
+        return err;
+    };
     defer allocator.free(result.stderr);
 
     const exit_code: u8 = switch (result.term) {
@@ -110,7 +115,11 @@ fn runSqliteQuery(allocator: std.mem.Allocator, db_path: []const u8) ![]u8 {
         else => 255,
     };
     if (exit_code != 0) {
-        std.log.warn("zed: sqlite3 exited with code {d}: {s}", .{ exit_code, result.stderr });
+        if (exit_code == 255 and std.mem.find(u8, result.stderr, "not found") != null) {
+            std.log.err("zed: sqlite3 CLI not found; install sqlite3 to enable Zed ingestion", .{});
+        } else {
+            std.log.warn("zed: sqlite3 exited with code {d}: {s}", .{ exit_code, result.stderr });
+        }
         allocator.free(result.stdout);
         return error.SqliteFailed;
     }

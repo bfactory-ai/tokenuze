@@ -41,5 +41,15 @@ jobs:
         with:
           version: ${{ matrix.zig-version }}
 
+      - name: Install sqlite
+        shell: bash
+        run: |
+          set -e
+          case "${{ matrix.platform }}" in
+            linux) sudo apt-get update && sudo apt-get install -y sqlite3 ;;
+            macos) brew install sqlite ;;
+            windows) choco install sqlite ;;
+          esac
+
       - name: Build ${{ matrix.platform }}
         run: zig build -Dtarget=${{ matrix.target }}

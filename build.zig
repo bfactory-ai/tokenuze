@@ -14,8 +14,6 @@ pub fn build(b: *std.Build) void {
 
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", b.fmt("{f}", .{resolved_version}));
-    const sqlite = b.systemIntegrationOption("sqlite", .{ .default = true });
-    build_options.addOption(bool, "use_sqlite", sqlite);
 
     const build_options_module = build_options.createModule();
 
