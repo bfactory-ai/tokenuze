@@ -16,6 +16,12 @@ const codex = @import("providers/codex.zig");
 const gemini = @import("providers/gemini.zig");
 const opencode = @import("providers/opencode.zig");
 const provider = @import("providers/provider.zig");
+const build_options = @import("build_options");
+comptime {
+    if (build_options.use_sqlite) {
+        _ = @import("providers/zed.zig");
+    }
+}
 const render = @import("render.zig");
 const timeutil = @import("time.zig");
 pub const parseTimezoneOffsetMinutes = timeutil.parseTimezoneOffsetMinutes;
@@ -68,32 +74,66 @@ pub const ProviderSpec = struct {
     load_pricing: LoadPricingFn,
 };
 
-pub const providers = [_]ProviderSpec{
-    .{
-        .name = "claude",
-        .phase_label = "collect_claude",
-        .collect = claude.collect,
-        .load_pricing = claude.loadPricingData,
-    },
-    .{
-        .name = "codex",
-        .phase_label = "collect_codex",
-        .collect = codex.collect,
-        .load_pricing = codex.loadPricingData,
-    },
-    .{
-        .name = "gemini",
-        .phase_label = "collect_gemini",
-        .collect = gemini.collect,
-        .load_pricing = gemini.loadPricingData,
-    },
-    .{
-        .name = "opencode",
-        .phase_label = "collect_opencode",
-        .collect = opencode.collect,
-        .load_pricing = opencode.loadPricingData,
-    },
-};
+pub const providers = if (build_options.use_sqlite)
+    [_]ProviderSpec{
+        .{
+            .name = "claude",
+            .phase_label = "collect_claude",
+            .collect = claude.collect,
+            .load_pricing = claude.loadPricingData,
+        },
+        .{
+            .name = "codex",
+            .phase_label = "collect_codex",
+            .collect = codex.collect,
+            .load_pricing = codex.loadPricingData,
+        },
+        .{
+            .name = "gemini",
+            .phase_label = "collect_gemini",
+            .collect = gemini.collect,
+            .load_pricing = gemini.loadPricingData,
+        },
+        .{
+            .name = "opencode",
+            .phase_label = "collect_opencode",
+            .collect = opencode.collect,
+            .load_pricing = opencode.loadPricingData,
+        },
+        .{
+            .name = "zed",
+            .phase_label = "collect_zed",
+            .collect = @import("providers/zed.zig").collect,
+            .load_pricing = @import("providers/zed.zig").loadPricingData,
+        },
+    }
+else
+    [_]ProviderSpec{
+        .{
+            .name = "claude",
+            .phase_label = "collect_claude",
+            .collect = claude.collect,
+            .load_pricing = claude.loadPricingData,
+        },
+        .{
+            .name = "codex",
+            .phase_label = "collect_codex",
+            .collect = codex.collect,
+            .load_pricing = codex.loadPricingData,
+        },
+        .{
+            .name = "gemini",
+            .phase_label = "collect_gemini",
+            .collect = gemini.collect,
+            .load_pricing = gemini.loadPricingData,
+        },
+        .{
+            .name = "opencode",
+            .phase_label = "collect_opencode",
+            .collect = opencode.collect,
+            .load_pricing = opencode.loadPricingData,
+        },
+    };
 
 const SummaryResult = struct {
     builder: model.SummaryBuilder,
