@@ -72,17 +72,8 @@ pub fn streamEvents(
 }
 
 pub fn loadPricingData(shared_allocator: std.mem.Allocator, pricing: *model.PricingMap) !void {
-    try insertAlias(shared_allocator, pricing, "Gemini 3 Pro", "gemini-3-pro");
-    try insertAlias(shared_allocator, pricing, "Gemini 2.5 Flash", "gemini-2.5-flash");
-}
-
-fn insertAlias(allocator: std.mem.Allocator, pricing: *model.PricingMap, alias: []const u8, target: []const u8) !void {
-    if (pricing.get(alias) != null) return;
-    if (pricing.get(target)) |entry| {
-        const alias_copy = try allocator.dupe(u8, alias);
-        const value = entry;
-        try pricing.put(alias_copy, value);
-    }
+    _ = shared_allocator;
+    _ = pricing;
 }
 
 fn resolveDbPath(allocator: std.mem.Allocator) ![]u8 {
