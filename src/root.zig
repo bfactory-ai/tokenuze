@@ -211,6 +211,33 @@ pub fn renderSummaryAlloc(allocator: std.mem.Allocator, filters: DateFilters, se
     return try renderSummaryBuffer(allocator, summary.builder.items(), &summary.totals, filters.pretty_output);
 }
 
+pub fn renderSessionsAlloc(
+    allocator: std.mem.Allocator,
+    filters: DateFilters,
+    selection: ProviderSelection,
+    pretty: bool,
+) ![]u8 {
+    var cache = PricingCache.init(allocator);
+    defer cache.deinit(allocator);
+    return try renderSessionsWithCache(allocator, filters, selection, pretty, &cache);
+}
+
+pub fn renderSessionsWithCache(
+    allocator: std.mem.Allocator,
+    filters: DateFilters,
+    selection: ProviderSelection,
+    pretty: bool,
+    cache: *PricingCache,
+) ![]u8 {
+    var recorder = model.SessionRecorder.init(allocator);
+    defer recorder.deinit(allocator);
+
+    var summary = try collectSummaryInternal(allocator, filters, selection, false, &recorder, cache);
+    defer summary.deinit(allocator);
+
+    return recorder.renderJson(allocator, pretty);
+}
+
 pub fn collectUploadReport(
     allocator: std.mem.Allocator,
     filters: DateFilters,
@@ -236,7 +263,7 @@ pub fn collectUploadReportWithCache(
     const daily_json = try renderSummaryBuffer(allocator, summary.builder.items(), &summary.totals, filters.pretty_output);
     errdefer allocator.free(daily_json);
 
-    const sessions_json = try recorder.renderJson(allocator);
+    const sessions_json = try recorder.renderJson(allocator, filters.pretty_output);
     errdefer allocator.free(sessions_json);
 
     return UploadReport{

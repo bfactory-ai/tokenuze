@@ -17,6 +17,7 @@ pub const CliOptions = struct {
     upload: bool = false,
     output_explicit: bool = false,
     log_level: std.log.Level = if (builtin.mode == .Debug) .debug else .err,
+    sessions: bool = false,
 };
 
 const OptionId = enum {
@@ -26,6 +27,7 @@ const OptionId = enum {
     pretty,
     table,
     json,
+    sessions,
     log_level,
     agent,
     upload,
@@ -55,6 +57,7 @@ const option_specs = [_]OptionSpec{
     .{ .id = .table, .long_name = "table", .desc = "Render usage as a table (default behavior)" },
     .{ .id = .json, .long_name = "json", .desc = "Render usage as JSON instead of the table" },
     .{ .id = .pretty, .long_name = "pretty", .desc = "Expand JSON output for readability" },
+    .{ .id = .sessions, .long_name = "sessions", .desc = "Render session-level JSON instead of daily summary" },
     .{ .id = .agent, .long_name = "agent", .value_name = "<name>", .desc = "Restrict collection to selected providers (available: {s})", .kind = .value },
     .{ .id = .log_level, .long_name = "log-level", .value_name = "LEVEL", .desc = "Control logging verbosity (error|warn|info|debug)", .kind = .value },
     .{ .id = .upload, .long_name = "upload", .desc = "Upload Tokenuze JSON via DASHBOARD_API_KEY and DASHBOARD_API_URL envs" },
@@ -243,6 +246,11 @@ fn applyOption(
             options.output_explicit = true;
         },
         .json => {
+            options.filters.output_format = .json;
+            options.output_explicit = true;
+        },
+        .sessions => {
+            options.sessions = true;
             options.filters.output_format = .json;
             options.output_explicit = true;
         },
@@ -448,6 +456,14 @@ test "cli parses filters and agent selection" {
 test "cli parses --json" {
     var iter = TestIterator.init(&.{"--json"});
     const options = try parseOptionsIterator(&iter);
+    try testing.expect(options.filters.output_format == .json);
+    try testing.expect(options.output_explicit);
+}
+
+test "cli parses --sessions" {
+    var iter = TestIterator.init(&.{"--sessions"});
+    const options = try parseOptionsIterator(&iter);
+    try testing.expect(options.sessions);
     try testing.expect(options.filters.output_format == .json);
     try testing.expect(options.output_explicit);
 }

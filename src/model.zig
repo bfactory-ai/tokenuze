@@ -402,11 +402,16 @@ pub const SessionRecorder = struct {
         }
     }
 
-    pub fn renderJson(self: *const SessionRecorder, allocator: std.mem.Allocator) ![]u8 {
+    pub fn renderJson(self: *const SessionRecorder, allocator: std.mem.Allocator, pretty: bool) ![]u8 {
         var buffer = std.ArrayList(u8).empty;
         defer buffer.deinit(allocator);
         var writer_state = io_util.ArrayWriter.init(&buffer, allocator);
-        var stringify = std.json.Stringify{ .writer = writer_state.writer(), .options = .{} };
+        var stringify = std.json.Stringify{
+            .writer = writer_state.writer(),
+            .options = .{
+                .whitespace = if (pretty) .indent_2 else .minified,
+            },
+        };
         try stringify.beginObject();
         try stringify.objectField("sessions");
         try self.writeSessionsArray(allocator, &stringify);

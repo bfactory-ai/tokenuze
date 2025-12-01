@@ -84,6 +84,26 @@ pub fn main() !void {
             return;
         }
     }
+    if (options.sessions) {
+        const json = try tokenuze.renderSessionsAlloc(
+            allocator,
+            options.filters,
+            options.providers,
+            options.filters.pretty_output,
+        );
+        defer allocator.free(json);
+
+        var buffer: [4096]u8 = undefined;
+        var stdout = std.fs.File.stdout().writer(&buffer);
+        const writer = &stdout.interface;
+        try writer.print("{s}\n", .{json});
+        writer.flush() catch |err| switch (err) {
+            error.WriteFailed => {},
+            else => return err,
+        };
+        return;
+    }
+
     try tokenuze.run(allocator, options.filters, options.providers);
 }
 
