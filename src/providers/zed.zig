@@ -163,10 +163,16 @@ fn parseRow(
     defer temp_allocator.free(data_hex);
 
     const blob_len = data_hex.len / 2;
-    if (data_hex.len % 2 != 0) return;
+    if (data_hex.len % 2 != 0) {
+        std.log.warn("zed: invalid hex length for thread {s} (len={d})", .{ thread_id, data_hex.len });
+        return;
+    }
     const blob = try temp_allocator.alloc(u8, blob_len);
     errdefer temp_allocator.free(blob);
-    _ = std.fmt.hexToBytes(blob, data_hex) catch return;
+    _ = std.fmt.hexToBytes(blob, data_hex) catch |err| {
+        std.log.warn("zed: invalid hex data for thread {s} ({s})", .{ thread_id, @errorName(err) });
+        return;
+    };
     defer temp_allocator.free(blob);
 
     const json_data = decompressIfNeeded(shared_allocator, blob, data_type) catch |err| {
