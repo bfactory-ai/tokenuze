@@ -33,14 +33,53 @@ pub const Renderer = struct {
     const column_count = table_columns.len;
     const max_models_in_table = 3;
 
+    const SessionColumnId = enum {
+        session,
+        activity,
+        models,
+        input,
+        output,
+        cache_create,
+        cache_read,
+        reasoning,
+        total_tokens,
+        cost,
+    };
+
+    const session_columns = [_]Column{
+        .{ .id = .date, .header = "Session", .alignment = .left },
+        .{ .id = .date, .header = "Last Activity", .alignment = .left },
+        .{ .id = .models, .header = "Models", .alignment = .left },
+        .{ .id = .input, .header = "Input", .alignment = .right },
+        .{ .id = .output, .header = "Output", .alignment = .right },
+        .{ .id = .cache_create, .header = "Cache Create", .alignment = .right },
+        .{ .id = .cache_read, .header = "Cache Read", .alignment = .right },
+        .{ .id = .total_tokens, .header = "Reasoning", .alignment = .right },
+        .{ .id = .total_tokens, .header = "Total Tokens", .alignment = .right },
+        .{ .id = .cost, .header = "Cost (USD)", .alignment = .right },
+    };
+
+    const session_column_count = session_columns.len;
+
     const Row = struct {
         cells: [column_count][]const u8,
+    };
+
+    const SessionRow = struct {
+        cells: [session_column_count][]const u8,
     };
 
     fn usageFieldVisibilityFromTotals(totals: *const model.SummaryTotals) model.UsageFieldVisibility {
         return .{
             .cache_creation = totals.usage.cache_creation_input_tokens > 0,
             .cache_read = totals.usage.cached_input_tokens > 0,
+        };
+    }
+
+    fn usageFieldVisibilityFromTokenUsage(usage: model.TokenUsage) model.UsageFieldVisibility {
+        return .{
+            .cache_creation = usage.cache_creation_input_tokens > 0,
+            .cache_read = usage.cached_input_tokens > 0,
         };
     }
 
@@ -131,6 +170,60 @@ pub const Renderer = struct {
         }
     }
 
+    pub fn writeSessionsTable(
+        writer: *std.Io.Writer,
+        allocator: std.mem.Allocator,
+        recorder: *const model.SessionRecorder,
+    ) !void {
+        var sessions = try recorder.sortedSessions(allocator);
+        defer sessions.deinit(allocator);
+
+        if (sessions.items.len == 0) {
+            try writer.writeAll("No session data found for the selected filters.\n");
+            return;
+        }
+
+        const visibility = usageFieldVisibilityFromTokenUsage(recorder.totals);
+        const show_reasoning = recorder.totals.reasoning_output_tokens > 0;
+        var column_usage = [_]bool{true} ** session_column_count;
+        column_usage[@intFromEnum(SessionColumnId.cache_create)] = visibility.cache_creation;
+        column_usage[@intFromEnum(SessionColumnId.cache_read)] = visibility.cache_read;
+        column_usage[@intFromEnum(SessionColumnId.reasoning)] = show_reasoning;
+
+        var arena_state = std.heap.ArenaAllocator.init(allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+
+        var widths = [_]usize{0} ** session_column_count;
+        for (session_columns, 0..) |column, idx| {
+            if (!column_usage[idx]) continue;
+            widths[idx] = column.header.len;
+        }
+
+        var rows = try arena.alloc(SessionRow, sessions.items.len);
+        for (sessions.items, 0..) |session, idx| {
+            rows[idx] = try formatSessionRow(arena, session);
+            updateSessionWidths(&widths, rows[idx].cells[0..], column_usage[0..]);
+        }
+
+        const totals_row = try formatSessionTotalsRow(arena, recorder, sessions.items.len);
+        updateSessionWidths(&widths, totals_row.cells[0..], column_usage[0..]);
+
+        try writeSessionRule(writer, widths[0..], column_usage[0..], '-');
+        var header_cells: [session_column_count][]const u8 = undefined;
+        for (session_columns, 0..) |column, idx| {
+            header_cells[idx] = column.header;
+        }
+        try writeSessionRow(writer, widths[0..], header_cells[0..], session_columns[0..], column_usage[0..]);
+        try writeSessionRule(writer, widths[0..], column_usage[0..], '=');
+        for (rows) |row| {
+            try writeSessionRow(writer, widths[0..], row.cells[0..], session_columns[0..], column_usage[0..]);
+        }
+        try writeSessionRule(writer, widths[0..], column_usage[0..], '-');
+        try writeSessionRow(writer, widths[0..], totals_row.cells[0..], session_columns[0..], column_usage[0..]);
+        try writeSessionRule(writer, widths[0..], column_usage[0..], '-');
+    }
+
     const Output = struct {
         daily: SummaryArray,
         totals: TotalsView,
@@ -214,6 +307,121 @@ pub const Renderer = struct {
             try jw.endObject();
         }
     };
+
+    fn formatSessionRow(
+        allocator: std.mem.Allocator,
+        session: *const model.SessionRecorder.SessionEntry,
+    ) !SessionRow {
+        var cells: [session_column_count][]const u8 = undefined;
+        cells[@intFromEnum(SessionColumnId.session)] = session.session_id;
+        cells[@intFromEnum(SessionColumnId.activity)] = session.last_activity orelse "-";
+        cells[@intFromEnum(SessionColumnId.models)] = try formatSessionModels(allocator, session.models.items);
+        cells[@intFromEnum(SessionColumnId.input)] = try formatNumber(allocator, session.usage.input_tokens);
+        cells[@intFromEnum(SessionColumnId.output)] = try formatNumber(allocator, session.usage.output_tokens);
+        cells[@intFromEnum(SessionColumnId.cache_create)] = try formatNumber(allocator, session.usage.cache_creation_input_tokens);
+        cells[@intFromEnum(SessionColumnId.cache_read)] = try formatNumber(allocator, session.usage.cached_input_tokens);
+        cells[@intFromEnum(SessionColumnId.reasoning)] = try formatNumber(allocator, session.usage.reasoning_output_tokens);
+        cells[@intFromEnum(SessionColumnId.total_tokens)] = try formatNumber(allocator, session.usage.total_tokens);
+        cells[@intFromEnum(SessionColumnId.cost)] = try formatCurrency(allocator, session.cost_usd);
+        return SessionRow{ .cells = cells };
+    }
+
+    fn formatSessionTotalsRow(
+        allocator: std.mem.Allocator,
+        recorder: *const model.SessionRecorder,
+        session_count: usize,
+    ) !SessionRow {
+        var cells: [session_column_count][]const u8 = undefined;
+        cells[@intFromEnum(SessionColumnId.session)] = "TOTAL";
+        cells[@intFromEnum(SessionColumnId.activity)] = "-";
+        cells[@intFromEnum(SessionColumnId.models)] = try std.fmt.allocPrint(
+            allocator,
+            "{d} sessions",
+            .{session_count},
+        );
+        const display_input = effectiveInputTokens(recorder.totals, recorder.display_total_input_tokens);
+        cells[@intFromEnum(SessionColumnId.input)] = try formatNumber(allocator, display_input);
+        cells[@intFromEnum(SessionColumnId.output)] = try formatNumber(allocator, recorder.totals.output_tokens);
+        cells[@intFromEnum(SessionColumnId.cache_create)] = try formatNumber(allocator, recorder.totals.cache_creation_input_tokens);
+        cells[@intFromEnum(SessionColumnId.cache_read)] = try formatNumber(allocator, recorder.totals.cached_input_tokens);
+        cells[@intFromEnum(SessionColumnId.reasoning)] = try formatNumber(allocator, recorder.totals.reasoning_output_tokens);
+        cells[@intFromEnum(SessionColumnId.total_tokens)] = try formatNumber(allocator, recorder.totals.total_tokens);
+        cells[@intFromEnum(SessionColumnId.cost)] = try formatCurrency(allocator, recorder.total_cost_usd);
+        return SessionRow{ .cells = cells };
+    }
+
+    fn formatSessionModels(
+        allocator: std.mem.Allocator,
+        models: []const model.SessionRecorder.SessionModel,
+    ) ![]const u8 {
+        if (models.len == 0) return "-";
+        const count = if (models.len > max_models_in_table) max_models_in_table else models.len;
+        const names = try allocator.alloc([]const u8, count);
+        for (names, 0..) |*slot, idx| {
+            slot.* = models[idx].name;
+        }
+        var joined = try std.mem.join(allocator, ", ", names);
+        if (models.len > count) {
+            joined = try std.fmt.allocPrint(allocator, "{s} (+{d} more)", .{ joined, models.len - count });
+        }
+        return joined;
+    }
+
+    fn updateSessionWidths(
+        widths: []usize,
+        cells: []const []const u8,
+        column_usage: []const bool,
+    ) void {
+        for (cells, 0..) |cell, idx| {
+            if (!column_usage[idx]) continue;
+            if (cell.len > widths[idx]) widths[idx] = cell.len;
+        }
+    }
+
+    fn writeSessionRule(
+        writer: *std.Io.Writer,
+        widths: []const usize,
+        column_usage: []const bool,
+        ch: u8,
+    ) !void {
+        try writer.writeAll("+");
+        for (widths, 0..) |width, idx| {
+            if (!column_usage[idx]) continue;
+            try writer.splatByteAll(ch, width + 2);
+            try writer.writeAll("+");
+        }
+        try writer.writeAll("\n");
+    }
+
+    fn writeSessionRow(
+        writer: *std.Io.Writer,
+        widths: []const usize,
+        cells: []const []const u8,
+        columns: []const Column,
+        column_usage: []const bool,
+    ) !void {
+        try writer.writeAll("|");
+        for (cells, 0..) |cell, idx| {
+            if (!column_usage[idx]) continue;
+            const width = widths[idx];
+            const alignment = columns[idx].alignment;
+            const padding = if (width > cell.len) width - cell.len else 0;
+            try writer.writeAll(" ");
+            switch (alignment) {
+                .left => {
+                    try writer.writeAll(cell);
+                    try writer.splatByteAll(' ', padding);
+                },
+                .right => {
+                    try writer.splatByteAll(' ', padding);
+                    try writer.writeAll(cell);
+                },
+            }
+            try writer.writeAll(" ");
+            try writer.writeAll("|");
+        }
+        try writer.writeAll("\n");
+    }
 
     fn formatRow(allocator: std.mem.Allocator, summary: *const model.DailySummary) !Row {
         var cells: [column_count][]const u8 = undefined;

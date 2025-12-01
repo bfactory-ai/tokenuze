@@ -211,6 +211,14 @@ pub fn renderSummaryAlloc(allocator: std.mem.Allocator, filters: DateFilters, se
     return try renderSummaryBuffer(allocator, summary.builder.items(), &summary.totals, filters.pretty_output);
 }
 
+pub fn renderSessionsTable(
+    writer: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    recorder: *const model.SessionRecorder,
+) !void {
+    try render.Renderer.writeSessionsTable(writer, allocator, recorder);
+}
+
 pub fn renderSessionsAlloc(
     allocator: std.mem.Allocator,
     filters: DateFilters,
@@ -229,13 +237,27 @@ pub fn renderSessionsWithCache(
     pretty: bool,
     cache: *PricingCache,
 ) ![]u8 {
-    var recorder = model.SessionRecorder.init(allocator);
+    var recorder = try collectSessionsWithCache(allocator, filters, selection, cache);
     defer recorder.deinit(allocator);
+    return recorder.renderJson(allocator, pretty);
+}
+
+pub fn collectSessionsWithCache(
+    allocator: std.mem.Allocator,
+    filters: DateFilters,
+    selection: ProviderSelection,
+    cache: *PricingCache,
+) !model.SessionRecorder {
+    var recorder = model.SessionRecorder.init(allocator);
+    errdefer recorder.deinit(allocator);
 
     var summary = try collectSummaryInternal(allocator, filters, selection, false, &recorder, cache);
+    recorder.totals = summary.totals.usage;
+    recorder.display_total_input_tokens = summary.totals.display_input_tokens;
+    recorder.total_cost_usd = summary.totals.cost_usd;
     defer summary.deinit(allocator);
 
-    return recorder.renderJson(allocator, pretty);
+    return recorder;
 }
 
 pub fn collectUploadReport(
