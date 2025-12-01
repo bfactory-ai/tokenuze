@@ -17,14 +17,14 @@ pub const Renderer = struct {
     const Column = table.Column;
 
     const table_columns = [_]Column{
-        .{ .id = .date, .header = "Date", .alignment = .left },
-        .{ .id = .models, .header = "Models", .alignment = .left },
-        .{ .id = .input, .header = "Input", .alignment = .right },
-        .{ .id = .output, .header = "Output", .alignment = .right },
-        .{ .id = .cache_create, .header = "Cache Create", .alignment = .right },
-        .{ .id = .cache_read, .header = "Cache Read", .alignment = .right },
-        .{ .id = .total_tokens, .header = "Total Tokens", .alignment = .right },
-        .{ .id = .cost, .header = "Cost (USD)", .alignment = .right },
+        .{ .header = "Date", .alignment = .left },
+        .{ .header = "Models", .alignment = .left },
+        .{ .header = "Input", .alignment = .right },
+        .{ .header = "Output", .alignment = .right },
+        .{ .header = "Cache Create", .alignment = .right },
+        .{ .header = "Cache Read", .alignment = .right },
+        .{ .header = "Total Tokens", .alignment = .right },
+        .{ .header = "Cost (USD)", .alignment = .right },
     };
 
     const column_count = table_columns.len;
@@ -44,16 +44,16 @@ pub const Renderer = struct {
     };
 
     const session_columns = [_]Column{
-        .{ .id = .date, .header = "Session", .alignment = .left },
-        .{ .id = .date, .header = "Last Activity", .alignment = .left },
-        .{ .id = .models, .header = "Models", .alignment = .left },
-        .{ .id = .input, .header = "Input", .alignment = .right },
-        .{ .id = .output, .header = "Output", .alignment = .right },
-        .{ .id = .cache_create, .header = "Cache Create", .alignment = .right },
-        .{ .id = .cache_read, .header = "Cache Read", .alignment = .right },
-        .{ .id = .total_tokens, .header = "Reasoning", .alignment = .right },
-        .{ .id = .total_tokens, .header = "Total Tokens", .alignment = .right },
-        .{ .id = .cost, .header = "Cost (USD)", .alignment = .right },
+        .{ .header = "Session", .alignment = .left },
+        .{ .header = "Last Activity", .alignment = .left },
+        .{ .header = "Models", .alignment = .left },
+        .{ .header = "Input", .alignment = .right },
+        .{ .header = "Output", .alignment = .right },
+        .{ .header = "Cache Create", .alignment = .right },
+        .{ .header = "Cache Read", .alignment = .right },
+        .{ .header = "Reasoning", .alignment = .right },
+        .{ .header = "Total Tokens", .alignment = .right },
+        .{ .header = "Cost (USD)", .alignment = .right },
     };
 
     const session_column_count = session_columns.len;
