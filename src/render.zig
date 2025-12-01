@@ -589,11 +589,7 @@ pub const Renderer = struct {
             }
 
             pub fn splatByteAll(self: *@This(), byte: u8, count: usize) !void {
-                try self.list.ensureTotalCapacity(self.alloc, self.list.items.len + count);
-                var i: usize = 0;
-                while (i < count) : (i += 1) {
-                    self.list.appendAssumeCapacity(byte);
-                }
+                try self.list.appendNTimes(self.alloc, byte, count);
             }
         };
 
