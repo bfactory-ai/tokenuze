@@ -57,7 +57,7 @@ pub fn parseTimezoneOffsetMinutes(input: []const u8) ParseTimezoneError!i32 {
     var hours: i32 = 0;
     var minutes: i32 = 0;
 
-    if (std.mem.indexOfScalar(u8, remaining, ':')) |colon_idx| {
+    if (std.mem.findScalar(u8, remaining, ':')) |colon_idx| {
         const hours_part = remaining[0..colon_idx];
         const minutes_part = remaining[colon_idx + 1 ..];
         if (hours_part.len == 0 or hours_part.len > 2) return error.InvalidFormat;
@@ -171,7 +171,7 @@ test "parseTimezoneOffsetMinutes handles various formats" {
 }
 
 fn parseIso8601ToUtcSeconds(timestamp: []const u8) TimestampError!i64 {
-    const split_index = std.mem.indexOfScalar(u8, timestamp, 'T') orelse return error.InvalidFormat;
+    const split_index = std.mem.findScalar(u8, timestamp, 'T') orelse return error.InvalidFormat;
     const date_part = timestamp[0..split_index];
     const time_part = timestamp[split_index + 1 ..];
 

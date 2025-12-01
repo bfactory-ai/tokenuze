@@ -120,7 +120,7 @@ fn getHardwareUuid(allocator: std.mem.Allocator) !?[]u8 {
         else => return null,
     }
 
-    if (std.mem.indexOf(u8, result.stdout, "IOPlatformUUID")) |idx| {
+    if (std.mem.find(u8, result.stdout, "IOPlatformUUID")) |idx| {
         var cursor = idx;
         while (cursor < result.stdout.len and result.stdout[cursor] != '"') : (cursor += 1) {}
         if (cursor >= result.stdout.len) return null;
@@ -198,7 +198,7 @@ fn parseMacFromCommand(
     }
 
     const output = result.stdout;
-    if (std.mem.indexOf(u8, output, needle)) |idx| {
+    if (std.mem.find(u8, output, needle)) |idx| {
         var start = idx + needle.len;
         while (start < output.len and std.ascii.isWhitespace(output[start])) : (start += 1) {}
         if (start >= output.len) return null;
