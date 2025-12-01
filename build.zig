@@ -70,21 +70,11 @@ pub fn build(b: *std.Build) void {
     const cli_tests = b.addTest(.{ .root_module = cli_test_module });
     cli_tests.root_module.link_libc = true;
 
-    const table_test_module = b.createModule(.{
-        .root_source_file = b.path("src/table.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const table_tests = b.addTest(.{ .root_module = table_test_module });
-    table_tests.root_module.link_libc = true;
-
     const test_step = b.step("test", "Run unit tests");
     const test_cmd = b.addRunArtifact(unit_tests);
     const cli_test_cmd = b.addRunArtifact(cli_tests);
-    const table_test_cmd = b.addRunArtifact(table_tests);
     test_step.dependOn(&test_cmd.step);
     test_step.dependOn(&cli_test_cmd.step);
-    test_step.dependOn(&table_test_cmd.step);
 }
 
 fn resolveVersion(b: *std.Build) std.SemanticVersion {

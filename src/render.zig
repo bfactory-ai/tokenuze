@@ -1,9 +1,8 @@
 const std = @import("std");
 const model = @import("model.zig");
-const table = @import("table.zig");
 
 pub const Renderer = struct {
-    const Alignment = table.Alignment;
+    const Alignment = enum { left, right };
     const ColumnId = enum {
         date,
         models,
@@ -14,7 +13,10 @@ pub const Renderer = struct {
         total_tokens,
         cost,
     };
-    const Column = table.Column;
+    const Column = struct {
+        header: []const u8,
+        alignment: Alignment,
+    };
 
     const table_columns = [_]Column{
         .{ .header = "Date", .alignment = .left },
@@ -139,25 +141,25 @@ pub const Renderer = struct {
         var rows = try arena.alloc(Row, summaries.len);
         for (summaries, 0..) |*summary, idx| {
             rows[idx] = try formatRow(arena, summary);
-            updateWidths(&widths, rows[idx].cells[0..], column_usage[0..]);
+            updateWidths(widths[0..], rows[idx].cells[0..], column_usage[0..]);
         }
 
         const totals_row = try formatTotalsRow(arena, totals);
-        updateWidths(&widths, totals_row.cells[0..], column_usage[0..]);
+        updateWidths(widths[0..], totals_row.cells[0..], column_usage[0..]);
 
-        try table.writeRule(writer, widths[0..], column_usage[0..], '-');
+        try writeRule(writer, widths[0..], column_usage[0..], '-');
         var header_cells: [column_count][]const u8 = undefined;
         for (table_columns, 0..) |column, idx| {
             header_cells[idx] = column.header;
         }
-        try table.writeRow(writer, widths[0..], header_cells[0..], table_columns[0..], column_usage[0..]);
-        try table.writeRule(writer, widths[0..], column_usage[0..], '=');
+        try writeRow(writer, widths[0..], header_cells[0..], table_columns[0..], column_usage[0..]);
+        try writeRule(writer, widths[0..], column_usage[0..], '=');
         for (rows) |row| {
-            try table.writeRow(writer, widths[0..], row.cells[0..], table_columns[0..], column_usage[0..]);
+            try writeRow(writer, widths[0..], row.cells[0..], table_columns[0..], column_usage[0..]);
         }
-        try table.writeRule(writer, widths[0..], column_usage[0..], '-');
-        try table.writeRow(writer, widths[0..], totals_row.cells[0..], table_columns[0..], column_usage[0..]);
-        try table.writeRule(writer, widths[0..], column_usage[0..], '-');
+        try writeRule(writer, widths[0..], column_usage[0..], '-');
+        try writeRow(writer, widths[0..], totals_row.cells[0..], table_columns[0..], column_usage[0..]);
+        try writeRule(writer, widths[0..], column_usage[0..], '-');
 
         if (totals.missing_pricing.items.len > 0) {
             try writer.writeAll("\nMissing pricing entries:\n");
@@ -200,25 +202,25 @@ pub const Renderer = struct {
         var rows = try arena.alloc(SessionRow, sessions.items.len);
         for (sessions.items, 0..) |session, idx| {
             rows[idx] = try formatSessionRow(arena, session);
-            table.updateWidths(widths[0..], rows[idx].cells[0..], column_usage[0..]);
+            updateWidths(widths[0..], rows[idx].cells[0..], column_usage[0..]);
         }
 
         const totals_row = try formatSessionTotalsRow(arena, recorder, sessions.items.len);
-        table.updateWidths(widths[0..], totals_row.cells[0..], column_usage[0..]);
+        updateWidths(widths[0..], totals_row.cells[0..], column_usage[0..]);
 
-        try table.writeRule(writer, widths[0..], column_usage[0..], '-');
+        try writeRule(writer, widths[0..], column_usage[0..], '-');
         var header_cells: [session_column_count][]const u8 = undefined;
         for (session_columns, 0..) |column, idx| {
             header_cells[idx] = column.header;
         }
-        try table.writeRow(writer, widths[0..], header_cells[0..], session_columns[0..], column_usage[0..]);
-        try table.writeRule(writer, widths[0..], column_usage[0..], '=');
+        try writeRow(writer, widths[0..], header_cells[0..], session_columns[0..], column_usage[0..]);
+        try writeRule(writer, widths[0..], column_usage[0..], '=');
         for (rows) |row| {
-            try table.writeRow(writer, widths[0..], row.cells[0..], session_columns[0..], column_usage[0..]);
+            try writeRow(writer, widths[0..], row.cells[0..], session_columns[0..], column_usage[0..]);
         }
-        try table.writeRule(writer, widths[0..], column_usage[0..], '-');
-        try table.writeRow(writer, widths[0..], totals_row.cells[0..], session_columns[0..], column_usage[0..]);
-        try table.writeRule(writer, widths[0..], column_usage[0..], '-');
+        try writeRule(writer, widths[0..], column_usage[0..], '-');
+        try writeRow(writer, widths[0..], totals_row.cells[0..], session_columns[0..], column_usage[0..]);
+        try writeRule(writer, widths[0..], column_usage[0..], '-');
     }
 
     const Output = struct {
@@ -403,8 +405,51 @@ pub const Renderer = struct {
         return usage.input_tokens;
     }
 
-    fn updateWidths(widths: *[column_count]usize, cells: []const []const u8, column_usage: []const bool) void {
-        table.updateWidths(widths, cells, column_usage);
+    fn updateWidths(widths: []usize, cells: []const []const u8, column_usage: []const bool) void {
+        for (cells, 0..) |cell, idx| {
+            if (!column_usage[idx]) continue;
+            if (cell.len > widths[idx]) widths[idx] = cell.len;
+        }
+    }
+
+    fn writeRule(writer: anytype, widths: []const usize, column_usage: []const bool, ch: u8) !void {
+        try writer.writeAll("+");
+        for (widths, 0..) |width, idx| {
+            if (!column_usage[idx]) continue;
+            try writer.splatByteAll(ch, width + 2);
+            try writer.writeAll("+");
+        }
+        try writer.writeAll("\n");
+    }
+
+    fn writeRow(
+        writer: anytype,
+        widths: []const usize,
+        cells: []const []const u8,
+        columns: []const Column,
+        column_usage: []const bool,
+    ) !void {
+        try writer.writeAll("|");
+        for (cells, 0..) |cell, idx| {
+            if (!column_usage[idx]) continue;
+            const width = widths[idx];
+            const alignment = columns[idx].alignment;
+            const padding = if (width > cell.len) width - cell.len else 0;
+            try writer.writeAll(" ");
+            switch (alignment) {
+                .left => {
+                    try writer.writeAll(cell);
+                    try writer.splatByteAll(' ', padding);
+                },
+                .right => {
+                    try writer.splatByteAll(' ', padding);
+                    try writer.writeAll(cell);
+                },
+            }
+            try writer.writeAll(" ");
+            try writer.writeAll("|");
+        }
+        try writer.writeAll("\n");
     }
 
     fn formatModels(
@@ -479,14 +524,6 @@ pub const Renderer = struct {
         return result;
     }
 
-    test "formatDigitsWithCommas works" {
-        const allocator = std.testing.allocator;
-        const input = "1234567".*;
-        const output = try formatDigitsWithCommas(allocator, input);
-        defer allocator.free(output);
-        try std.testing.expectEqualStrings("1,234,567", output);
-    }
-
     test "writeSessionsTable renders tiny snapshot" {
         const allocator = std.testing.allocator;
         var recorder = model.SessionRecorder.init(allocator);
@@ -511,5 +548,47 @@ pub const Renderer = struct {
         const out = stream.getWritten();
         try std.testing.expect(std.mem.indexOf(u8, out, "s1") != null);
         try std.testing.expect(std.mem.indexOf(u8, out, "$1.23") != null);
+    }
+
+    test "formatDigitsWithCommas works" {
+        const allocator = std.testing.allocator;
+        const input = "1234567".*;
+        const output = try formatDigitsWithCommas(allocator, input);
+        defer allocator.free(output);
+        try std.testing.expectEqualStrings("1,234,567", output);
+    }
+
+    test "writeRow respects alignment and widths" {
+        var list = std.ArrayListUnmanaged(u8){};
+        defer list.deinit(std.testing.allocator);
+
+        const columns = [_]Column{
+            .{ .header = "Left", .alignment = .left },
+            .{ .header = "Right", .alignment = .right },
+        };
+        var widths = [_]usize{ 4, 5 };
+        const cells = [_][]const u8{ "a", "b" };
+        const usage = [_]bool{ true, true };
+
+        const TestWriter = struct {
+            list: *std.ArrayListUnmanaged(u8),
+            alloc: std.mem.Allocator,
+
+            pub fn writeAll(self: *@This(), bytes: []const u8) !void {
+                try self.list.appendSlice(self.alloc, bytes);
+            }
+
+            pub fn splatByteAll(self: *@This(), byte: u8, count: usize) !void {
+                try self.list.ensureTotalCapacity(self.alloc, self.list.items.len + count);
+                var i: usize = 0;
+                while (i < count) : (i += 1) {
+                    self.list.appendAssumeCapacity(byte);
+                }
+            }
+        };
+
+        var writer = TestWriter{ .list = &list, .alloc = std.testing.allocator };
+        try writeRow(&writer, &widths, &cells, &columns, &usage);
+        try std.testing.expectEqualStrings("| a    |     b |\n", list.items);
     }
 };
