@@ -8,7 +8,7 @@ Tokenuze is a Zig CLI that summarizes OpenAI Codex, Gemini, Claude, Opencode, an
 - Optional: access to Gemini session logs at `~/.gemini/tmp`
 - Optional: access to Claude session logs at `~/.claude/projects`
 - Optional: access to Opencode session logs at `~/.local/share/opencode/storage/session` (messages live under `storage/message/<sessionID>`)
-- Optional: access to Zed threads db at `~/.local/share/zed/threads/threads.db` (requires sqlite system integration at build time)
+- Optional: access to Zed threads db at `~/.local/share/zed/threads/threads.db` (requires the sqlite3 binary at runtime)
 - Optional: network access to fetch remote pricing / uploading stats
 
 ## Quick Start
