@@ -121,7 +121,8 @@ fn handleSessionsOutput(allocator: std.mem.Allocator, options: cli.CliOptions) !
     defer recorder.deinit(allocator);
 
     if (options.filters.output_format == .table) {
-        try tokenuze.renderSessionsTable(writer, allocator, &recorder);
+        const tz_offset: i32 = @intCast(options.filters.timezone_offset_minutes);
+        try tokenuze.renderSessionsTable(writer, allocator, &recorder, tz_offset);
     } else {
         const json = try recorder.renderJson(allocator, options.filters.pretty_output);
         defer allocator.free(json);

@@ -13,6 +13,7 @@ pub const TimestampError = error{
     InvalidDate,
     InvalidTimeZone,
     OutOfRange,
+    OutOfMemory,
 };
 
 pub const ParseTimezoneError = error{
@@ -25,6 +26,39 @@ const seconds_per_day: i64 = 24 * 60 * 60;
 pub fn isoDateForTimezone(timestamp: []const u8, offset_minutes: i32) TimestampError![10]u8 {
     const utc_seconds = try parseIso8601ToUtcSeconds(timestamp);
     return utcSecondsToOffsetIsoDate(utc_seconds, offset_minutes);
+}
+
+pub fn formatTimestampForTimezone(
+    allocator: std.mem.Allocator,
+    timestamp: []const u8,
+    offset_minutes: i32,
+) TimestampError![]u8 {
+    const utc_seconds = try parseIso8601ToUtcSeconds(timestamp);
+    const local_seconds_i64 = utc_seconds + (@as(i64, offset_minutes) * 60);
+    const local_seconds = std.math.cast(u64, local_seconds_i64) orelse return error.OutOfRange;
+
+    const epoch = std.time.epoch.EpochSeconds{ .secs = local_seconds };
+    const epoch_day = epoch.getEpochDay();
+    const year_day = epoch_day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_seconds = epoch.getDaySeconds();
+
+    var tz_buf: [16]u8 = undefined;
+    const tz_label = formatTimezoneLabel(&tz_buf, offset_minutes);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} {s}",
+        .{
+            year_day.year,
+            month_day.month.numeric(),
+            @as(u8, month_day.day_index) + 1,
+            day_seconds.getHoursIntoDay(),
+            day_seconds.getMinutesIntoHour(),
+            day_seconds.getSecondsIntoMinute(),
+            tz_label,
+        },
+    );
 }
 
 pub fn parseTimezoneOffsetMinutes(input: []const u8) ParseTimezoneError!i32 {
@@ -153,6 +187,13 @@ test "isoDateForTimezone adjusts across day boundaries" {
 
     const negative = try isoDateForTimezone("2025-09-01T04:00:00Z", -5 * 60);
     try std.testing.expectEqualStrings("2025-08-31", negative[0..]);
+}
+
+test "formatTimestampForTimezone shifts and labels" {
+    const allocator = std.testing.allocator;
+    const formatted = try formatTimestampForTimezone(allocator, "2025-02-15T18:30:00Z", -5 * 60);
+    defer allocator.free(formatted);
+    try std.testing.expectEqualStrings("2025-02-15 13:30:00 UTC-05:00", formatted);
 }
 
 test "parseTimezoneOffsetMinutes handles various formats" {

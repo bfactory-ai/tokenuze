@@ -1,5 +1,6 @@
 const std = @import("std");
 const model = @import("model.zig");
+const timeutil = @import("time.zig");
 
 pub const Renderer = struct {
     const Alignment = enum { left, right };
@@ -183,6 +184,7 @@ pub const Renderer = struct {
         writer: *std.Io.Writer,
         allocator: std.mem.Allocator,
         recorder: *const model.SessionRecorder,
+        timezone_offset_minutes: i32,
     ) !void {
         var sessions = try recorder.sortedSessions(allocator);
         defer sessions.deinit(allocator);
@@ -211,7 +213,7 @@ pub const Renderer = struct {
 
         var rows = try arena.alloc(SessionRow, sessions.items.len);
         for (sessions.items, 0..) |session, idx| {
-            rows[idx] = try formatSessionRow(arena, session);
+            rows[idx] = try formatSessionRow(arena, session, timezone_offset_minutes);
             updateWidths(widths[0..], rows[idx].cells[0..], column_usage[0..]);
         }
 
@@ -320,10 +322,14 @@ pub const Renderer = struct {
     fn formatSessionRow(
         allocator: std.mem.Allocator,
         session: *const model.SessionRecorder.SessionEntry,
+        timezone_offset_minutes: i32,
     ) !SessionRow {
         var cells: [session_column_count][]const u8 = undefined;
         cells[@intFromEnum(SessionColumnId.session)] = session.session_id;
-        cells[@intFromEnum(SessionColumnId.activity)] = session.last_activity orelse "-";
+        cells[@intFromEnum(SessionColumnId.activity)] = if (session.last_activity) |timestamp|
+            timeutil.formatTimestampForTimezone(allocator, timestamp, timezone_offset_minutes) catch timestamp
+        else
+            "-";
         cells[@intFromEnum(SessionColumnId.models)] = try formatSessionModels(allocator, session.models.items);
         cells[@intFromEnum(SessionColumnId.input)] = try formatNumber(allocator, session.usage.input_tokens);
         cells[@intFromEnum(SessionColumnId.output)] = try formatNumber(allocator, session.usage.output_tokens);
@@ -557,10 +563,31 @@ pub const Renderer = struct {
         var stream = std.io.fixedBufferStream(&buffer);
         const writer = &stream.writer();
 
-        try Renderer.writeSessionsTable(writer, allocator, &recorder);
+        try Renderer.writeSessionsTable(writer, allocator, &recorder, 0);
         const out = stream.getWritten();
         try std.testing.expect(std.mem.indexOf(u8, out, "s1") != null);
         try std.testing.expect(std.mem.indexOf(u8, out, "$1.23") != null);
+    }
+
+    test "writeSessionsTable formats last activity with timezone" {
+        const allocator = std.testing.allocator;
+        var recorder = model.SessionRecorder.init(allocator);
+        defer recorder.deinit(allocator);
+
+        var gop = try recorder.sessions.getOrPut("session-a");
+        gop.key_ptr.* = try allocator.dupe(u8, "session-a");
+        gop.value_ptr.* = model.SessionRecorder.SessionEntry.init("session-a", "", "");
+        try gop.value_ptr.updateLastActivity(allocator, "2025-02-15T18:30:00Z");
+        gop.value_ptr.usage.input_tokens = 1;
+        recorder.totals.input_tokens = 1;
+
+        var buffer: [256]u8 = undefined;
+        var stream = std.io.fixedBufferStream(&buffer);
+        const writer = &stream.writer();
+
+        try Renderer.writeSessionsTable(writer, allocator, &recorder, -5 * 60);
+        const out = stream.getWritten();
+        try std.testing.expect(std.mem.indexOf(u8, out, "2025-02-15 13:30:00 UTC-05:00") != null);
     }
 
     test "formatDigitsWithCommas works" {

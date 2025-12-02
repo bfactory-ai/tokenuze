@@ -223,8 +223,9 @@ pub fn renderSessionsTable(
     writer: *std.Io.Writer,
     allocator: std.mem.Allocator,
     recorder: *const model.SessionRecorder,
+    timezone_offset_minutes: i32,
 ) !void {
-    try render.Renderer.writeSessionsTable(writer, allocator, recorder);
+    try render.Renderer.writeSessionsTable(writer, allocator, recorder, timezone_offset_minutes);
 }
 
 pub fn renderSessionsAlloc(
