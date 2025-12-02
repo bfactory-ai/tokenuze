@@ -4,11 +4,6 @@ const provider = @import("provider.zig");
 
 const db_dirname = ".crush";
 const db_filename = "crush.db";
-const parse_ctx = provider.ParseContext{
-    .provider_name = "crush",
-    .legacy_fallback_model = null,
-    .cached_counts_overlap_input = false,
-};
 
 pub const EventConsumer = struct {
     context: *anyopaque,
@@ -49,7 +44,6 @@ pub fn streamEvents(
     consumer: EventConsumer,
     progress: ?std.Progress.Node,
 ) !void {
-    _ = progress;
     var db_paths = try findCrushDbPaths(shared_allocator, temp_allocator);
     defer {
         for (db_paths.items) |p| shared_allocator.free(p);
@@ -61,12 +55,18 @@ pub fn streamEvents(
         return;
     }
 
+    const progress_node: ?std.Progress.Node = if (progress) |p|
+        p.start("crush_dbs", db_paths.items.len)
+    else
+        null;
+
     var work_state = WorkState{
         .paths = db_paths.items,
         .next_index = .init(0),
         .filters = filters,
         .consumer = consumer,
         .shared_allocator = shared_allocator,
+        .progress = progress_node,
     };
 
     const cpu_count = std.Thread.getCpuCount() catch |err| blk: {
@@ -99,6 +99,7 @@ const WorkState = struct {
     filters: model.DateFilters,
     consumer: EventConsumer,
     shared_allocator: std.mem.Allocator,
+    progress: ?std.Progress.Node,
 };
 
 fn workerMain(state: *WorkState) void {
@@ -112,6 +113,7 @@ fn workerMain(state: *WorkState) void {
         const path = state.paths[idx];
         processDb(state, temp_alloc, path);
         _ = arena.reset(.retain_capacity);
+        if (state.progress) |p| p.completeOne();
     }
 }
 
