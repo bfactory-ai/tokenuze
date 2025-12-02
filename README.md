@@ -1,44 +1,39 @@
 # Tokenuze
 
-Tokenuze is a Zig CLI that summarizes OpenAI Codex, Gemini, Claude, Opencode, Zed, and Crush session usage. It scans `~/.codex/sessions`, `~/.gemini/tmp`, `~/.claude/projects`, `~/.local/share/opencode/storage/session`, `~/.local/share/zed/threads/threads.db`, and `.crush/crush.db`, aggregates token counts per day and per model, and reports pricing using either the live LiteLLM pricing manifest or local fallbacks. Output is rendered as a ccusage-style table by default (or compact JSON with `--json`), making it easy to feed into dashboards or further scripts.
+Tokenuze is a CLI tool that summarizes token and cost usage from various LLM providers.
+It scans session logs, aggregates token counts, and reports pricing.
+The output is a table or JSON, suitable for dashboards.
 
 ## Requirements
 - Zig 0.16.0-dev.1456+16fc083f2 (for building from source)
-- Optional: Access to Codex session logs at `~/.codex/sessions`
-- Optional: access to Gemini session logs at `~/.gemini/tmp`
-- Optional: access to Claude session logs at `~/.claude/projects`
-- Optional: access to Opencode session logs at `~/.local/share/opencode/storage/session` (messages live under `storage/message/<sessionID>`)
-- Optional: access to Zed threads db at `~/.local/share/zed/threads/threads.db` (requires the sqlite3 binary at runtime)
-- Optional: access to Crush database at `.crush/crush.db` (requires the sqlite3 binary at runtime)
-- Optional: network access to fetch remote pricing / uploading stats
+- `sqlite3` in your `PATH` (for Zed and Crush providers)
+- Network access to fetch remote pricing / uploading stats (optional)
+
+## Supported Providers
+- Claude Code: `~/.claude/projects`
+- Codex: `~/.codex/sessions`
+- Crush: `.crush/crush.db` (project-based, recursively crawled)
+- Gemini CLI: `~/.gemini/tmp`
+- Opencode: `~/.local/share/opencode/storage/session`
+- Zed: `~/.local/share/zed/threads/threads.db`
+
+## Installation
+```bash
+git clone https://github.com/bfactory-ai/tokenuze.git
+cd tokenuze
+zig build --release=fast
+```
 
 ## Quick Start
 ```bash
-zig build --release=fast  # release mode in zig-out/bin/tokenuze
-tokenuze --upload  # upload usage across all supported models
-tokenuze --upload --agent codex --agent gemini --agent claude --agent opencode --agent crush  # request specific agents
-tokenuze --since 20250101
-tokenuze --since 20250101 --until 20250107
-tokenuze --sessions --since 20250101              # print per-session table (default)
-tokenuze --sessions --since 20250101 --json --pretty  # print per-session JSON
-tokenuze --help
+./zig-out/bin/tokenuze --upload  # upload usage across all supported models
+./zig-out/bin/tokenuze --upload --agent gemini --agent opencode  # request specific agents
+./zig-out/bin/tokenuze --since 20250101 --until 20250107  # filter a specific date range
+./zig-out/bin/tokenuze --sessions --since 20250101  # print per-session table (default)
+./zig-out/bin/tokenuze --sessions --since 20250101 --json --pretty  # print per-session JSON
+./zig-out/bin/tokenuze --help  # display all usage options
 ```
 
-## Command-Line Options
-- `--since YYYYMMDD` limits processing to events on/after the specified local date.
-- `--until YYYYMMDD` caps the range; must be >= `--since` when both are present.
-- `--tz <offset>` buckets events using a fixed offset like `+09`, `-05:30`, or `UTC` (default: system timezone).
-- `--table` renders the daily summaries as a ccusage-style table (default behavior; if you also pass `--json`, whichever flag appears last on the command line decides the format).
-- `--json` renders daily summaries as JSON instead of the table (respects `--pretty`; last `--table`/`--json` flag wins when both are present).
-- `--sessions` renders session-level output (table by default; use `--json`/`--pretty` for JSON) and includes per-session token/cost breakdown.
-- `--pretty` enables indented JSON output (handy when reading the payload manually).
-- `--log-level <error|warn|info|debug>` controls how chatty Tokenuze's logs are (defaults to `info`).
-- `--agent <codex|gemini|claude|opencode|zed|crush>` restricts processing to the specified provider; repeat the flag to include multiple (defaults to all providers compiled into the binary).
-- `--machine-id` prints the cached/generated machine identifier and exits (no summaries).
-- `--upload` captures Tokenuze's JSON summary for the selected providers and POSTs it to `/api/usage/report` using `DASHBOARD_API_URL`/`DASHBOARD_API_KEY`. Pass `--table` or `--json` alongside `--upload` to display a local report after the upload completes.
-
-## What It Produces
-Tokenuze prints a JSON payload shaped like:
 ```json
 {
   "daily": [
@@ -97,15 +92,14 @@ Tokenuze prints a JSON payload shaped like:
   }
 }
 ```
+</details>
 
 Missing pricing entries are listed under `missing_pricing`.
 
 ## Extending
-Provider integrations live in `src/providers/`. To add a new LLM vendor:
-1. Start with `provider.makeProvider` (see `claude.zig`/`gemini.zig`) to leverage shared utilities and reduce boilerplate.
-2. Implement a parser that emits `Model.TokenUsageEvent` rows; use the shared helpers where possible:
-   - `ParseContext.captureModel/requireModel` keep per-session model state consistent.
-   - `UsageFieldDescriptor` + `jsonParseUsageObjectWithDescriptors` let you describe raw token counters declaratively instead of hand-writing math.
-   - `streamJsonLines`/`parseJsonLine`, `timestampFromSlice`, and `overrideSessionLabelFromSlice` cover the common JSON streaming + timestamp/session-id plumbing so providers focus on their unique bits.
-3. Expose any provider-specific pricing loader and register the provider in `src/root.zig` so CLI option parsing recognizes it.
-4. Add fixtures under `fixtures/<provider>/` plus unit tests near the parser to lock in expected token deltas.
+To add a new provider:
+1. Create a new file in `src/providers/` and use the `provider.makeProvider` factory.
+2. Implement a parser for the provider's log format that emits `model.TokenUsageEvent` objects.
+3. Use helpers in `src/providers/provider.zig` for common tasks like JSON parsing and timestamp handling.
+4. Register the provider in `src/root.zig` and expose a `loadPricingData` function for fallback pricing.
+5. Add test fixtures in a new `fixtures/<provider>` directory and write unit tests in your provider's file.
