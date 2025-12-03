@@ -288,6 +288,28 @@ const pricing_aliases = [_]struct { alias: []const u8, target: []const u8 }{
     .{ .alias = "gemini 1.5 pro", .target = "gemini-1.5-pro" },
     .{ .alias = "gemini 1.5 flash", .target = "gemini-1.5-flash" },
     .{ .alias = "gemini 1.5 flash-8b", .target = "gemini-1.5-flash-8b" },
+
+    // Anthropic model display names (e.g. Zed threads.db)
+    .{ .alias = "claude sonnet 4", .target = "claude-sonnet-4-20250514" },
+    .{ .alias = "claude sonnet 4 thinking", .target = "claude-sonnet-4-20250514" },
+    .{ .alias = "claude sonnet 4.5", .target = "claude-sonnet-4-5-20250929" },
+    .{ .alias = "claude sonnet 4.5 thinking", .target = "claude-sonnet-4-5-20250929" },
+    .{ .alias = "claude haiku 4.5", .target = "claude-haiku-4-5-20251001" },
+
+    // DeepSeek display names
+    .{ .alias = "deepseek chat", .target = "deepseek-chat" },
+    .{ .alias = "deepseek reasoner", .target = "deepseek-reasoner" },
+
+    // Grok / xAI
+    .{ .alias = "grok code fast 1", .target = "xai/grok-code-fast-1" },
+
+    // Kimi / Moonshot variants seen in routers and UI
+    .{ .alias = "kimi k2 0905", .target = "deepinfra/moonshotai/Kimi-K2-Instruct-0905" },
+    .{ .alias = "kimi k2 0905 exacto", .target = "deepinfra/moonshotai/Kimi-K2-Instruct-0905" },
+    .{ .alias = "kimi k2 0905 (exacto)", .target = "deepinfra/moonshotai/Kimi-K2-Instruct-0905" },
+    .{ .alias = "kimi k2 thinking", .target = "moonshot/kimi-k2-thinking" },
+    .{ .alias = "kimi k2 0905 preview", .target = "moonshot/kimi-k2-0711-preview" },
+    .{ .alias = "kimi-k2-0905-preview", .target = "moonshot/kimi-k2-0711-preview" },
 };
 
 pub fn deinitPricingMap(map: *PricingMap, allocator: std.mem.Allocator) void {
@@ -788,19 +810,21 @@ fn resolveModelPricing(
     if (resolveWithName(allocator, pricing_map, model_name, model_name)) |rate|
         return rate;
 
-    var variants: [2]?[]u8 = .{ null, null };
+    var variants: [6]?[]u8 = @splat(null);
     var variant_count: usize = 0;
 
     variants[variant_count] = createDateVariant(allocator, model_name, '-', '@') catch null;
     if (variants[variant_count]) |_| variant_count += 1;
     variants[variant_count] = createDateVariant(allocator, model_name, '@', '-') catch null;
     if (variants[variant_count]) |_| variant_count += 1;
+    variants[variant_count] = createHyphenVariant(allocator, model_name) catch null;
+    if (variants[variant_count]) |_| variant_count += 1;
+    variants[variant_count] = createBasenameVariant(allocator, model_name) catch null;
+    if (variants[variant_count]) |_| variant_count += 1;
+    variants[variant_count] = createHyphenBasenameVariant(allocator, model_name) catch null;
+    if (variants[variant_count]) |_| variant_count += 1;
 
-    defer {
-        for (variants) |maybe_variant| {
-            if (maybe_variant) |variant| allocator.free(variant);
-        }
-    }
+    defer for (variants) |maybe_variant| if (maybe_variant) |variant| allocator.free(variant);
 
     for (variants[0..variant_count]) |maybe_variant| {
         if (maybe_variant) |variant| {
@@ -940,6 +964,49 @@ fn createDateVariant(
         search_index = pos + 1;
     }
     return null;
+}
+
+fn createBasenameVariant(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+) !?[]u8 {
+    const last_slash = std.mem.lastIndexOfScalar(u8, source, '/') orelse return null;
+    if (last_slash + 1 >= source.len) return null;
+    return allocator.dupe(u8, source[last_slash + 1 ..]) catch null;
+}
+
+fn createHyphenVariant(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+) !?[]u8 {
+    var needs_change = false;
+    for (source) |c| {
+        if (c == ' ' or std.ascii.isUpper(c)) {
+            needs_change = true;
+            break;
+        }
+    }
+    if (!needs_change) return null;
+
+    var out = try allocator.alloc(u8, source.len);
+    errdefer allocator.free(out);
+    for (source, 0..) |c, i| {
+        if (c == ' ') {
+            out[i] = '-';
+        } else {
+            out[i] = std.ascii.toLower(c);
+        }
+    }
+    return out;
+}
+
+fn createHyphenBasenameVariant(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+) !?[]u8 {
+    const base = try createBasenameVariant(allocator, source) orelse return null;
+    defer allocator.free(base);
+    return createHyphenVariant(allocator, base);
 }
 
 fn isEightDigitBlock(block: []const u8) bool {
@@ -1116,4 +1183,24 @@ test "resolveModelPricing normalizes date separators" {
     const rate = resolveModelPricing(allocator, &map, "claude-3-opus-20240229") orelse unreachable;
     try std.testing.expectEqual(@as(f64, 3), rate.output_cost_per_m);
     try std.testing.expect(map.get("claude-3-opus-20240229") != null);
+}
+
+test "resolveModelPricing handles hyphen and basename variants" {
+    const allocator = std.testing.allocator;
+    var map = PricingMap.init(allocator);
+    defer deinitPricingMap(&map, allocator);
+
+    const grok_key = try allocator.dupe(u8, "grok-code-fast-1");
+    try map.put(grok_key, .{ .input_cost_per_m = 4, .cache_creation_cost_per_m = 4, .cached_input_cost_per_m = 4, .output_cost_per_m = 4 });
+
+    const claude_key = try allocator.dupe(u8, "claude-sonnet-4-20250514");
+    try map.put(claude_key, .{ .input_cost_per_m = 6, .cache_creation_cost_per_m = 6, .cached_input_cost_per_m = 6, .output_cost_per_m = 6 });
+
+    const grok_rate = resolveModelPricing(allocator, &map, "xai/grok-code-fast-1") orelse unreachable;
+    try std.testing.expectEqual(@as(f64, 4), grok_rate.input_cost_per_m);
+    try std.testing.expect(map.get("xai/grok-code-fast-1") != null);
+
+    const claude_rate = resolveModelPricing(allocator, &map, "Claude Sonnet 4") orelse unreachable;
+    try std.testing.expectEqual(@as(f64, 6), claude_rate.output_cost_per_m);
+    try std.testing.expect(map.get("Claude Sonnet 4") != null);
 }
