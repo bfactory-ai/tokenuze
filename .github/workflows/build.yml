@@ -43,3 +43,7 @@ jobs:
 
       - name: Build ${{ matrix.platform }}
         run: zig build -Dtarget=${{ matrix.target }}
+
+      - name: Test (${{ matrix.platform }} host)
+        if: ${{ matrix.platform == 'linux' }}
+        run: zig build test
