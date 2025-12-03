@@ -352,7 +352,7 @@ pub fn streamJsonLines(
                 ctx.logWarning(file_path, "session stream exceeded max_bytes; stopping early", error.ResponseLimitExceeded);
                 limit_warned = true;
             }
-            return error.StreamLimitExceeded;
+            return; // truncate but do not fail
         }
 
         var line_slice: []const u8 = partial_line.items;
@@ -376,7 +376,7 @@ pub fn streamJsonLines(
                 ctx.logWarning(file_path, "session stream exceeded max_bytes; stopping early", error.ResponseLimitExceeded);
                 limit_warned = true;
             }
-            return error.StreamLimitExceeded;
+            return; // truncate but do not fail
         }
     }
 }
