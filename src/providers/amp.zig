@@ -112,27 +112,13 @@ fn parseThreadPayload(
         var total_input_override: ?u64 = null;
         var total_tokens_override: ?u64 = null;
 
-        if (usage_obj.get("inputTokens")) |val| {
-            entry.usage.input_tokens = parseU64(val);
-        }
-        if (usage_obj.get("cacheCreationInputTokens")) |val| {
-            entry.usage.cache_creation_input_tokens = parseU64(val);
-        }
-        if (usage_obj.get("cacheReadInputTokens")) |val| {
-            entry.usage.cached_input_tokens = parseU64(val);
-        }
-        if (usage_obj.get("outputTokens")) |val| {
-            entry.usage.output_tokens = parseU64(val);
-        }
-        if (usage_obj.get("reasoningOutputTokens")) |val| {
-            entry.usage.reasoning_output_tokens = parseU64(val);
-        }
-        if (usage_obj.get("totalInputTokens")) |val| {
-            total_input_override = parseU64(val);
-        }
-        if (usage_obj.get("totalTokens")) |val| {
-            total_tokens_override = parseU64(val);
-        }
+        entry.usage.input_tokens = if (usage_obj.get("inputTokens")) |val| parseU64(val) else 0;
+        entry.usage.cache_creation_input_tokens = if (usage_obj.get("cacheCreationInputTokens")) |val| parseU64(val) else 0;
+        entry.usage.cached_input_tokens = if (usage_obj.get("cacheReadInputTokens")) |val| parseU64(val) else 0;
+        entry.usage.output_tokens = if (usage_obj.get("outputTokens")) |val| parseU64(val) else 0;
+        entry.usage.reasoning_output_tokens = if (usage_obj.get("reasoningOutputTokens")) |val| parseU64(val) else 0;
+        total_input_override = if (usage_obj.get("totalInputTokens")) |val| parseU64(val) else null;
+        total_tokens_override = if (usage_obj.get("totalTokens")) |val| parseU64(val) else null;
 
         const total_input = total_input_override orelse
             (entry.usage.input_tokens + entry.usage.cache_creation_input_tokens + entry.usage.cached_input_tokens);
@@ -171,8 +157,8 @@ fn parseThreadPayload(
         if (event_obj.get("tokens")) |tokens_val| {
             switch (tokens_val) {
                 .object => |tok_obj| {
-                    if (tok_obj.get("input")) |v| ledger_tokens.input = parseU64(v);
-                    if (tok_obj.get("output")) |v| ledger_tokens.output = parseU64(v);
+                    ledger_tokens.input = if (tok_obj.get("input")) |v| parseU64(v) else 0;
+                    ledger_tokens.output = if (tok_obj.get("output")) |v| parseU64(v) else 0;
                 },
                 else => {},
             }
