@@ -813,16 +813,26 @@ fn resolveModelPricing(
     var variants: [6]?[]u8 = @splat(null);
     var variant_count: usize = 0;
 
-    variants[variant_count] = createDateVariant(allocator, model_name, '-', '@') catch null;
-    if (variants[variant_count]) |_| variant_count += 1;
-    variants[variant_count] = createDateVariant(allocator, model_name, '@', '-') catch null;
-    if (variants[variant_count]) |_| variant_count += 1;
-    variants[variant_count] = createHyphenVariant(allocator, model_name) catch null;
-    if (variants[variant_count]) |_| variant_count += 1;
-    variants[variant_count] = createBasenameVariant(allocator, model_name) catch null;
-    if (variants[variant_count]) |_| variant_count += 1;
-    variants[variant_count] = createHyphenBasenameVariant(allocator, model_name) catch null;
-    if (variants[variant_count]) |_| variant_count += 1;
+    if (createDateVariant(allocator, model_name, '-', '@') catch null) |variant| {
+        variants[variant_count] = variant;
+        variant_count += 1;
+    }
+    if (createDateVariant(allocator, model_name, '@', '-') catch null) |variant| {
+        variants[variant_count] = variant;
+        variant_count += 1;
+    }
+    if (createHyphenVariant(allocator, model_name) catch null) |variant| {
+        variants[variant_count] = variant;
+        variant_count += 1;
+    }
+    if (createBasenameVariant(allocator, model_name) catch null) |variant| {
+        variants[variant_count] = variant;
+        variant_count += 1;
+    }
+    if (createHyphenBasenameVariant(allocator, model_name) catch null) |variant| {
+        variants[variant_count] = variant;
+        variant_count += 1;
+    }
 
     defer for (variants) |maybe_variant| if (maybe_variant) |variant| allocator.free(variant);
 
