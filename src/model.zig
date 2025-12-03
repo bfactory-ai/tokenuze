@@ -486,13 +486,19 @@ pub const SessionRecorder = struct {
         third.key_ptr.* = try allocator.dupe(u8, "gamma");
         third.value_ptr.* = SessionEntry.init("gamma", "", "");
 
+        var fourth = try recorder.sessions.getOrPut("delta");
+        fourth.key_ptr.* = try allocator.dupe(u8, "delta");
+        fourth.value_ptr.* = SessionEntry.init("delta", "", "");
+        try fourth.value_ptr.updateLastActivity(allocator, "2025-01-01T00:00:00Z");
+
         var ordered = try recorder.sortedSessions(allocator);
         defer ordered.deinit(allocator);
 
-        try std.testing.expectEqual(@as(usize, 3), ordered.items.len);
+        try std.testing.expectEqual(@as(usize, 4), ordered.items.len);
         try std.testing.expectEqualStrings("alpha", ordered.items[0].session_id);
-        try std.testing.expectEqualStrings("beta", ordered.items[1].session_id);
-        try std.testing.expectEqualStrings("gamma", ordered.items[2].session_id);
+        try std.testing.expectEqualStrings("delta", ordered.items[1].session_id);
+        try std.testing.expectEqualStrings("beta", ordered.items[2].session_id);
+        try std.testing.expectEqualStrings("gamma", ordered.items[3].session_id);
     }
 
     fn sessionLessThan(_: void, lhs: *const SessionEntry, rhs: *const SessionEntry) bool {
