@@ -197,20 +197,12 @@ fn getObjectString(allocator: std.mem.Allocator, obj: std.json.ObjectMap, key: [
 
 test "zed parses sqlite output fixture" {
     const allocator = testing.allocator;
-    const json_payload = try std.fs.cwd().readFileAlloc(
-        "fixtures/zed/sqlite_output.json",
+    const count = try test_helpers.runFixtureParse(
         allocator,
-        std.Io.Limit.limited(1 << 20),
+        "fixtures/zed/sqlite_output.json",
+        parseRows,
     );
-    defer allocator.free(json_payload);
-
-    var events = std.ArrayList(model.TokenUsageEvent).empty;
-    defer test_helpers.freeCapturedEvents(allocator, &events);
-
-    const consumer = test_helpers.makeCapturingConsumer(&events);
-
-    try parseRows(allocator, allocator, .{}, consumer, json_payload);
-    try testing.expect(events.items.len > 0);
+    try testing.expect(count > 0);
 }
 
 fn decompressIfNeeded(allocator: std.mem.Allocator, blob: []const u8, data_type: []const u8) ![]u8 {
