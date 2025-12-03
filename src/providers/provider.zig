@@ -322,6 +322,17 @@ pub fn streamJsonLines(
 
     var limit_warned = false;
 
+    const checkLimit = struct {
+        fn hit(parse_ctx: *const ParseContext, path: []const u8, max_bytes: usize, total: usize, warned: *bool) bool {
+            if (total <= max_bytes) return false;
+            if (!warned.*) {
+                parse_ctx.logWarning(path, "session stream exceeded max_bytes; stopping early", error.ResponseLimitExceeded);
+                warned.* = true;
+            }
+            return true;
+        }
+    }.hit;
+
     while (true) {
         partial_line.clearRetainingCapacity();
         var writer_ctx = io_util.ArrayWriter.init(&partial_line, allocator);
@@ -347,13 +358,7 @@ pub fn streamJsonLines(
         }
 
         streamed_total += streamed;
-        if (streamed_total > options.max_bytes) {
-            if (!limit_warned) {
-                ctx.logWarning(file_path, "session stream exceeded max_bytes; stopping early", error.ResponseLimitExceeded);
-                limit_warned = true;
-            }
-            return; // truncate but do not fail
-        }
+        if (checkLimit(ctx, file_path, options.max_bytes, streamed_total, &limit_warned)) return; // truncate but do not fail
 
         var line_slice: []const u8 = partial_line.items;
         if (options.trim_lines) {
@@ -362,7 +367,7 @@ pub fn streamJsonLines(
         if (options.skip_empty and line_slice.len == 0) {
             if (!newline_consumed) break;
             streamed_total += discard_result;
-            if (streamed_total > options.max_bytes) return;
+            if (checkLimit(ctx, file_path, options.max_bytes, streamed_total, &limit_warned)) return;
             continue;
         }
 
@@ -371,13 +376,7 @@ pub fn streamJsonLines(
 
         if (!newline_consumed) break;
         streamed_total += discard_result;
-        if (streamed_total > options.max_bytes) {
-            if (!limit_warned) {
-                ctx.logWarning(file_path, "session stream exceeded max_bytes; stopping early", error.ResponseLimitExceeded);
-                limit_warned = true;
-            }
-            return; // truncate but do not fail
-        }
+        if (checkLimit(ctx, file_path, options.max_bytes, streamed_total, &limit_warned)) return; // truncate but do not fail
     }
 }
 
