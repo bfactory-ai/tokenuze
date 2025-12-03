@@ -13,7 +13,7 @@ pub fn makeCapturingConsumer(events: *std.ArrayList(model.TokenUsageEvent)) prov
                 alloc: std.mem.Allocator,
                 event: *const model.TokenUsageEvent,
                 filters: model.DateFilters,
-            ) anyerror!void {
+            ) model.IngestError!void {
                 _ = filters;
                 const list: *std.ArrayList(model.TokenUsageEvent) = @ptrCast(@alignCast(ctx_ptr));
                 var copy = event.*;

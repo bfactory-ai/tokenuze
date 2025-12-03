@@ -32,7 +32,7 @@ pub fn collect(
         .context = @ptrCast(&summary_ctx),
         .mutex = &builder_mutex,
         .ingest = struct {
-            fn ingest(ctx_ptr: *anyopaque, allocator: std.mem.Allocator, event: *const model.TokenUsageEvent, f: model.DateFilters) anyerror!void {
+            fn ingest(ctx_ptr: *anyopaque, allocator: std.mem.Allocator, event: *const model.TokenUsageEvent, f: model.DateFilters) model.IngestError!void {
                 const ctx: *@TypeOf(summary_ctx) = @ptrCast(@alignCast(ctx_ptr));
                 try ctx.builder.ingest(allocator, event, f);
             }

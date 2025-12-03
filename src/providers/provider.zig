@@ -7,7 +7,7 @@ const http_client = @import("../http_client.zig");
 pub const EventConsumer = struct {
     context: *anyopaque,
     mutex: ?*std.Thread.Mutex = null,
-    ingest: *const fn (*anyopaque, std.mem.Allocator, *const model.TokenUsageEvent, model.DateFilters) anyerror!void,
+    ingest: *const fn (*anyopaque, std.mem.Allocator, *const model.TokenUsageEvent, model.DateFilters) model.IngestError!void,
 };
 
 pub const FallbackPricingEntry = struct {
@@ -1047,7 +1047,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             allocator: std.mem.Allocator,
             event: *const model.TokenUsageEvent,
             filters: model.DateFilters,
-        ) anyerror!void {
+        ) model.IngestError!void {
             const ctx: *SummaryConsumer = @ptrCast(@alignCast(ctx_ptr));
             try ctx.builder.ingest(allocator, event, filters);
         }
