@@ -13,6 +13,7 @@ pub const SummaryTotals = model.SummaryTotals;
 pub const parseFilterDate = model.parseFilterDate;
 const claude = @import("providers/claude.zig");
 const codex = @import("providers/codex.zig");
+const amp = @import("providers/amp.zig");
 const gemini = @import("providers/gemini.zig");
 const opencode = @import("providers/opencode.zig");
 const zed = @import("providers/zed.zig");
@@ -83,6 +84,12 @@ pub const providers = [_]ProviderSpec{
         .phase_label = "collect_codex",
         .collect = codex.collect,
         .load_pricing = codex.loadPricingData,
+    },
+    .{
+        .name = "amp",
+        .phase_label = "collect_amp",
+        .collect = amp.collect,
+        .load_pricing = amp.loadPricingData,
     },
     .{
         .name = "gemini",

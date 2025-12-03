@@ -1,0 +1,33 @@
+{
+  "v": 1,
+  "id": "T-amp-fixture",
+  "created": 1764728759706,
+  "messages": [
+    {
+      "messageId": 1,
+      "role": "assistant",
+      "usage": {
+        "model": "claude-haiku-4-5-20251001",
+        "inputTokens": 9,
+        "cacheCreationInputTokens": 100,
+        "cacheReadInputTokens": 200,
+        "outputTokens": 50,
+        "totalInputTokens": 309
+      }
+    }
+  ],
+  "usageLedger": {
+    "events": [
+      {
+        "id": "evt-fixture",
+        "timestamp": "2025-12-03T02:18:38.333Z",
+        "model": "claude-haiku-4-5-20251001",
+        "credits": 0.5,
+        "tokens": { "input": 9, "output": 50 },
+        "operationType": "inference",
+        "fromMessageId": 0,
+        "toMessageId": 1
+      }
+    ]
+  }
+}
