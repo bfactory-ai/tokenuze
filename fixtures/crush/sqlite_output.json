@@ -1,0 +1,2 @@
+[{"id":"session-1","timestamp":"2024-01-01T12:00:00Z","prompt_tokens":100,"completion_tokens":50,"model":"gpt-4"},
+{"id":"session-2","timestamp":"2024-01-02T15:30:00Z","prompt_tokens":10,"completion_tokens":20,"model":"gpt-3.5-turbo"}]
