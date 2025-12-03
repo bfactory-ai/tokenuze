@@ -1207,6 +1207,9 @@ test "resolveModelPricing handles hyphen and basename variants" {
     const claude_key = try allocator.dupe(u8, "claude-sonnet-4-20250514");
     try map.put(claude_key, .{ .input_cost_per_m = 6, .cache_creation_cost_per_m = 6, .cached_input_cost_per_m = 6, .output_cost_per_m = 6 });
 
+    const hyphen_key = try allocator.dupe(u8, "my-test-model");
+    try map.put(hyphen_key, .{ .input_cost_per_m = 7, .cache_creation_cost_per_m = 7, .cached_input_cost_per_m = 7, .output_cost_per_m = 7 });
+
     const grok_rate = resolveModelPricing(allocator, &map, "xai/grok-code-fast-1") orelse unreachable;
     try std.testing.expectEqual(@as(f64, 4), grok_rate.input_cost_per_m);
     try std.testing.expect(map.get("xai/grok-code-fast-1") != null);
@@ -1214,4 +1217,8 @@ test "resolveModelPricing handles hyphen and basename variants" {
     const claude_rate = resolveModelPricing(allocator, &map, "Claude Sonnet 4") orelse unreachable;
     try std.testing.expectEqual(@as(f64, 6), claude_rate.output_cost_per_m);
     try std.testing.expect(map.get("Claude Sonnet 4") != null);
+
+    const hyphen_rate = resolveModelPricing(allocator, &map, "My Test Model") orelse unreachable;
+    try std.testing.expectEqual(@as(f64, 7), hyphen_rate.output_cost_per_m);
+    try std.testing.expect(map.get("My Test Model") != null);
 }
