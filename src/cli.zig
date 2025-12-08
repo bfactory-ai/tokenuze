@@ -197,22 +197,12 @@ pub fn printAgentList(allocator: std.mem.Allocator) !void {
         infos.deinit(allocator);
     }
 
-    var max_name: usize = 0;
-    for (infos.items) |info| {
-        if (info.name.len > max_name) max_name = info.name.len;
-    }
-
     var buffer: [1024]u8 = undefined;
     var stdout = std.fs.File.stdout().writer(&buffer);
     const writer = &stdout.interface;
     try writer.print("Supported agents:\n", .{});
     for (infos.items) |info| {
-        const padding = if (info.name.len < max_name) max_name - info.name.len else 0;
-        try writer.writeAll("  ");
-        try writer.writeAll(info.name);
-        var pad = padding;
-        while (pad > 0) : (pad -= 1) try writer.writeByte(' ');
-        try writer.print("  {s}\n", .{info.path});
+        try writer.print("  {s: <9}  {s}\n", .{ info.name, info.path });
     }
     writer.flush() catch |err| switch (err) {
         error.WriteFailed => {},
