@@ -76,17 +76,15 @@ pub fn streamEvents(
     };
     const worker_count = @max(@as(usize, 1), @min(db_paths.items.len, cpu_count));
 
-    var threads = try std.ArrayListUnmanaged(std.Thread).initCapacity(shared_allocator, worker_count);
-    defer threads.deinit(shared_allocator);
+    var threaded = std.Io.Threaded.init(shared_allocator);
+    defer threaded.deinit();
+    const io = threaded.io();
 
+    var group = std.Io.Group.init;
     for (0..worker_count) |_| {
-        const t = try std.Thread.spawn(.{}, workerMain, .{&work_state});
-        threads.appendAssumeCapacity(t);
+        group.async(io, workerMain, .{&work_state});
     }
-
-    for (threads.items) |t| {
-        t.join();
-    }
+    group.wait(io);
 }
 
 pub fn loadPricingData(shared_allocator: std.mem.Allocator, pricing: *model.PricingMap) !void {
