@@ -1270,7 +1270,6 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                             });
                             continue;
                         };
-                        defer worker_allocator.free(absolute_path);
 
                         if (relative.len <= json_ext.len or !std.mem.endsWith(u8, relative, json_ext)) continue;
                         const session_id_slice = relative[0 .. relative.len - json_ext.len];
