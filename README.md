@@ -26,7 +26,7 @@ The output is a table or JSON, suitable for dashboards.
 ```bash
 git clone https://github.com/bfactory-ai/tokenuze.git
 cd tokenuze
-zig build --release=fast  # binary will be in zig-out/bin/
+zig build -Doptimize=ReleaseFast  # binary will be in zig-out/bin/
 ```
 
 ## Quick Start
@@ -55,7 +55,7 @@ By appending the `--sessions` flag you can display session usage instead of dail
 
 Using the `--json` flag will display the result as a JSON file, which can be pretty printed with `--pretty`.
 
-If you are tracking the stats in a separate server you can apped the `--upload` flag to send them there.
+If you are tracking the stats in a separate server you can append the `--upload` flag to send them there.
 
 Finally, you can see all this information typing `tokenuze --help`.
 
@@ -122,7 +122,7 @@ Finally, you can see all this information typing `tokenuze --help`.
 }
 ```
 
-Missing pricing entries are listed under `missing_pricing`.
+Missing pricing entries are listed under `missingPricing`.
 
 </details>
 

@@ -797,6 +797,12 @@ pub fn applyPricing(
             appendUniqueString(allocator, &summary.missing_pricing, model.name) catch {};
         }
     }
+
+    std.sort.pdq([]const u8, summary.missing_pricing.items, {}, struct {
+        fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+            return std.mem.lessThan(u8, lhs, rhs);
+        }
+    }.lessThan);
 }
 
 fn resolveModelPricing(
@@ -1051,6 +1057,12 @@ pub fn collectMissingModels(
         errdefer allocator.free(owned_name);
         try output.append(allocator, owned_name);
     }
+
+    std.sort.pdq([]const u8, output.items, {}, struct {
+        fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+            return std.mem.lessThan(u8, lhs, rhs);
+        }
+    }.lessThan);
 }
 
 pub fn dateWithinFilters(filters: DateFilters, iso: []const u8) bool {
