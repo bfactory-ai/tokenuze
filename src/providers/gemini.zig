@@ -94,6 +94,7 @@ const MessageContext = struct {
 fn parseSessionFile(
     allocator: std.mem.Allocator,
     ctx: *const provider.ParseContext,
+    runtime: *const provider.ParseRuntime,
     session_id: []const u8,
     file_path: []const u8,
     deduper: ?*provider.MessageDeduper,
@@ -118,21 +119,18 @@ fn parseSessionFile(
         .model_state = &model_state,
     };
 
-    try provider.streamJsonLines(
+    try provider.withJsonObjectReader(
         allocator,
         ctx,
+        runtime,
         file_path,
         .{
             .max_bytes = 128 * 1024 * 1024,
-            .mode = .document,
-            .trim_lines = false,
-            .skip_empty = false,
             .open_error_message = "failed to open gemini session file",
-            .read_error_message = "error while reading gemini session stream",
-            .advance_error_message = "error while advancing gemini session stream",
+            .stat_error_message = "error while statting gemini session file",
         },
         &handler,
-        LineHandler.handle,
+        LineHandler.parseDocument,
     );
 }
 
@@ -293,10 +291,14 @@ test "gemini parser converts message totals into usage deltas" {
         .legacy_fallback_model = null,
         .cached_counts_overlap_input = false,
     };
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const runtime = provider.ParseRuntime{ .io = io_single.io() };
 
     try parseSessionFile(
         worker_allocator,
         &ctx,
+        &runtime,
         "gemini-fixture",
         "fixtures/gemini/basic.json",
         null,

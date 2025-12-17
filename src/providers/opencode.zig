@@ -201,6 +201,7 @@ const MessageRecord = struct {
 fn parseSessionFile(
     allocator: std.mem.Allocator,
     ctx: *const provider.ParseContext,
+    runtime: *const provider.ParseRuntime,
     session_id: []const u8,
     file_path: []const u8,
     deduper: ?*MessageDeduper,
@@ -211,9 +212,9 @@ fn parseSessionFile(
     var session_label = session_id;
     var session_label_overridden = false;
 
-    const io = ctx.io orelse return error.MissingIoContext;
+    const io = runtime.io;
 
-    const resolved_id = determineSessionIdentifier(allocator, ctx, file_path) catch |err| {
+    const resolved_id = determineSessionIdentifier(allocator, ctx, runtime, file_path) catch |err| {
         ctx.logWarning(file_path, "failed to read opencode session metadata", err);
         return;
     };
@@ -265,10 +266,10 @@ fn parseSessionFile(
 fn determineSessionIdentifier(
     allocator: std.mem.Allocator,
     ctx: *const provider.ParseContext,
+    runtime: *const provider.ParseRuntime,
     file_path: []const u8,
 ) ![]u8 {
-    _ = ctx;
-    if (readSessionIdentifier(allocator, file_path) catch null) |value| return value;
+    if (readSessionIdentifier(allocator, ctx, runtime, file_path) catch null) |value| return value;
     const base = std.fs.path.basename(file_path);
     if (std.mem.endsWith(u8, base, ".json")) {
         return allocator.dupe(u8, base[0 .. base.len - 5]);
@@ -276,31 +277,32 @@ fn determineSessionIdentifier(
     return allocator.dupe(u8, base);
 }
 
-fn readSessionIdentifier(allocator: std.mem.Allocator, file_path: []const u8) !?[]u8 {
-    const data = try std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.limited(1024 * 64));
-    defer allocator.free(data);
-
-    var slice_reader = std.Io.Reader.fixed(data);
-    var json_reader = std.json.Reader.init(allocator, &slice_reader);
-    defer json_reader.deinit();
-
-    if ((try json_reader.next()) != .object_begin) return null;
+fn readSessionIdentifier(
+    allocator: std.mem.Allocator,
+    ctx: *const provider.ParseContext,
+    runtime: *const provider.ParseRuntime,
+    file_path: []const u8,
+) !?[]u8 {
     var identifier: ?[]u8 = null;
-    try provider.jsonWalkObject(allocator, &json_reader, &identifier, struct {
-        fn handle(id_ptr: *?[]u8, scratch: std.mem.Allocator, reader: *std.json.Reader, key: []const u8) !void {
-            if (!std.mem.eql(u8, key, "id")) {
-                try reader.skipValue();
-                return;
-            }
-            if (id_ptr.* != null) {
-                try reader.skipValue();
-                return;
-            }
-            var token = try provider.jsonReadStringToken(scratch, reader);
-            defer token.deinit(scratch);
-            const trimmed = std.mem.trim(u8, token.view(), " \r\n\t");
-            if (trimmed.len == 0) return;
-            id_ptr.* = try scratch.dupe(u8, trimmed);
+    try provider.withJsonObjectReader(allocator, ctx, runtime, file_path, .{ .max_bytes = 1024 * 64 }, &identifier, struct {
+        fn handle(id_ptr: *?[]u8, scratch: std.mem.Allocator, reader: *std.json.Reader) !void {
+            try provider.jsonWalkObject(scratch, reader, id_ptr, struct {
+                fn field(ptr: *?[]u8, alloc: std.mem.Allocator, r: *std.json.Reader, key: []const u8) !void {
+                    if (!std.mem.eql(u8, key, "id")) {
+                        try r.skipValue();
+                        return;
+                    }
+                    if (ptr.* != null) {
+                        try r.skipValue();
+                        return;
+                    }
+                    var token = try provider.jsonReadStringToken(alloc, r);
+                    defer token.deinit(alloc);
+                    const trimmed = std.mem.trim(u8, token.view(), " \r\n\t");
+                    if (trimmed.len == 0) return;
+                    ptr.* = try alloc.dupe(u8, trimmed);
+                }
+            }.field);
         }
     }.handle);
     return identifier;
@@ -389,18 +391,19 @@ fn parseMessageFileTestWrapper(
     defer io_single.deinit();
     const io = io_single.io();
 
-    var ctx = provider.ParseContext{
+    const ctx = provider.ParseContext{
         .provider_name = "opencode-test",
         .legacy_fallback_model = null,
         .cached_counts_overlap_input = false,
-        .io = io,
     };
+    const runtime = provider.ParseRuntime{ .io = io };
 
     const absolute_path = try std.fs.cwd().realpathAlloc(allocator, session_path);
     defer allocator.free(absolute_path);
     try parseSessionFile(
         allocator,
         &ctx,
+        &runtime,
         "fixture-session",
         absolute_path,
         null,

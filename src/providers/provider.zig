@@ -21,7 +21,6 @@ pub const ParseContext = struct {
     provider_name: []const u8,
     legacy_fallback_model: ?[]const u8,
     cached_counts_overlap_input: bool,
-    io: ?std.Io = null,
 
     pub fn logWarning(self: ParseContext, file_path: []const u8, message: []const u8, err: anyerror) void {
         std.log.warn(
@@ -68,6 +67,10 @@ pub const ParseContext = struct {
         _ = try self.captureModel(allocator, state, raw_model);
         return resolveModel(&self, state);
     }
+};
+
+pub const ParseRuntime = struct {
+    io: std.Io,
 };
 
 fn modelSliceFrom(comptime T: type, raw_model: T) ?[]const u8 {
@@ -266,25 +269,75 @@ const UsageDescriptorContext = struct {
     descriptors: []const UsageFieldDescriptor,
 };
 
-pub const JsonlStreamMode = enum {
-    lines,
-    document,
-};
-
 pub const JsonlStreamOptions = struct {
     max_bytes: usize = 128 * 1024 * 1024,
     delimiter: u8 = '\n',
     trim_lines: bool = true,
     skip_empty: bool = true,
-    mode: JsonlStreamMode = .lines,
     open_error_message: []const u8 = "unable to open session file",
     read_error_message: []const u8 = "error while reading session stream",
     advance_error_message: []const u8 = "error while advancing session stream",
 };
 
+pub const JsonDocumentStreamOptions = struct {
+    max_bytes: u64 = 128 * 1024 * 1024,
+    open_error_message: []const u8 = "unable to open session file",
+    stat_error_message: []const u8 = "unable to stat session file",
+};
+
+pub fn withJsonDocumentReader(
+    allocator: std.mem.Allocator,
+    ctx: *const ParseContext,
+    runtime: *const ParseRuntime,
+    file_path: []const u8,
+    options: JsonDocumentStreamOptions,
+    handler_context: anytype,
+    comptime handler: fn (@TypeOf(handler_context), std.mem.Allocator, *std.json.Reader) anyerror!void,
+) !void {
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        ctx.logWarning(file_path, options.open_error_message, err);
+        return;
+    };
+    defer file.close();
+
+    const stat = file.stat() catch |err| {
+        ctx.logWarning(file_path, options.stat_error_message, err);
+        return;
+    };
+    if (stat.size > options.max_bytes) {
+        ctx.logWarning(file_path, "session file exceeded max_bytes; skipping", error.ResponseLimitExceeded);
+        return;
+    }
+
+    var reader_buffer: [4 * 1024]u8 = undefined;
+    var file_reader = file.readerStreaming(runtime.io, reader_buffer[0..]);
+    var json_reader = std.json.Reader.init(allocator, &file_reader.interface);
+    defer json_reader.deinit();
+
+    try handler(handler_context, allocator, &json_reader);
+}
+
+pub fn withJsonObjectReader(
+    allocator: std.mem.Allocator,
+    ctx: *const ParseContext,
+    runtime: *const ParseRuntime,
+    file_path: []const u8,
+    options: JsonDocumentStreamOptions,
+    handler_context: anytype,
+    comptime handler: fn (@TypeOf(handler_context), std.mem.Allocator, *std.json.Reader) anyerror!void,
+) !void {
+    try withJsonDocumentReader(allocator, ctx, runtime, file_path, options, handler_context, struct {
+        fn run(context: @TypeOf(handler_context), scratch: std.mem.Allocator, reader: *std.json.Reader) anyerror!void {
+            if ((try reader.next()) != .object_begin) return;
+            try handler(context, scratch, reader);
+        }
+    }.run);
+}
+
 pub fn streamJsonLines(
     allocator: std.mem.Allocator,
     ctx: *const ParseContext,
+    runtime: *const ParseRuntime,
     file_path: []const u8,
     options: JsonlStreamOptions,
     handler_context: anytype,
@@ -296,27 +349,7 @@ pub fn streamJsonLines(
     };
     defer file.close();
 
-    if (options.mode == .document) {
-        try streamJsonDocumentInternal(
-            allocator,
-            ctx,
-            file_path,
-            options,
-            file,
-            handler_context,
-            handler,
-        );
-        return;
-    }
-
-    var io_single: std.Io.Threaded = undefined;
-    var io_single_inited = false;
-    const io = if (ctx.io) |provided| provided else blk: {
-        io_single = std.Io.Threaded.init_single_threaded;
-        io_single_inited = true;
-        break :blk io_single.io();
-    };
-    defer if (io_single_inited) io_single.deinit();
+    const io = runtime.io;
 
     var reader_buffer: [64 * 1024]u8 = undefined;
     var file_reader = file.readerStreaming(io, reader_buffer[0..]);
@@ -388,43 +421,6 @@ pub fn streamJsonLines(
     }
 }
 
-fn streamJsonDocumentInternal(
-    allocator: std.mem.Allocator,
-    ctx: *const ParseContext,
-    file_path: []const u8,
-    options: JsonlStreamOptions,
-    file: std.fs.File,
-    handler_context: anytype,
-    comptime handler: fn (@TypeOf(handler_context), []const u8, usize) anyerror!void,
-) !void {
-    var document: std.ArrayList(u8) = .empty;
-    defer document.deinit(allocator);
-
-    var buffer: [64 * 1024]u8 = undefined;
-    var streamed_total: usize = 0;
-
-    while (true) {
-        const read_len = file.read(buffer[0..]) catch |err| {
-            ctx.logWarning(file_path, options.read_error_message, err);
-            return;
-        };
-        if (read_len == 0) break;
-        streamed_total += read_len;
-        if (streamed_total > options.max_bytes) return;
-        try document.appendSlice(allocator, buffer[0..read_len]);
-    }
-
-    var line_slice: []const u8 = document.items;
-    if (options.trim_lines) {
-        line_slice = std.mem.trim(u8, line_slice, " \t\r\n");
-    }
-    if (options.skip_empty and line_slice.len == 0) {
-        return;
-    }
-
-    try handler(handler_context, line_slice, 1);
-}
-
 pub const EventSink = struct {
     context: *anyopaque,
     emitFn: *const fn (*anyopaque, model.TokenUsageEvent) anyerror!void,
@@ -455,6 +451,7 @@ pub const EventListCollector = struct {
 pub const ParseSessionFn = *const fn (
     allocator: std.mem.Allocator,
     ctx: *const ParseContext,
+    runtime: *const ParseRuntime,
     session_id: []const u8,
     file_path: []const u8,
     deduper: ?*MessageDeduper,
@@ -1341,9 +1338,8 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             timezone_offset_minutes: i32,
             sink: EventSink,
         ) !void {
-            var ctx = parse_context;
-            ctx.io = io;
-            try parse_fn(allocator, &ctx, session_id, file_path, deduper, timezone_offset_minutes, sink);
+            const runtime = ParseRuntime{ .io = io };
+            try parse_fn(allocator, &parse_context, &runtime, session_id, file_path, deduper, timezone_offset_minutes, sink);
         }
 
         test "pricing parser stores manifest entries" {

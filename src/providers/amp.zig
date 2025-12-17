@@ -35,6 +35,7 @@ const LedgerTokens = struct {
 fn parseSessionFile(
     allocator: std.mem.Allocator,
     ctx: *const provider.ParseContext,
+    runtime: *const provider.ParseRuntime,
     session_id: []const u8,
     file_path: []const u8,
     deduper: ?*provider.MessageDeduper,
@@ -42,24 +43,50 @@ fn parseSessionFile(
     sink: provider.EventSink,
 ) !void {
     _ = deduper;
-    const payload = try std.fs.cwd().readFileAlloc(file_path, allocator, .limited(64 * 1024 * 1024));
-    defer allocator.free(payload);
+    const Handler = struct {
+        ctx: *const provider.ParseContext,
+        session_id: []const u8,
+        timezone_offset_minutes: i32,
+        sink: provider.EventSink,
 
-    try parseThreadPayload(allocator, ctx, session_id, payload, timezone_offset_minutes, sink);
+        fn handle(self: *@This(), scratch: std.mem.Allocator, reader: *std.json.Reader) !void {
+            var parsed = try std.json.parseFromTokenSource(std.json.Value, scratch, reader, .{});
+            defer parsed.deinit();
+            try parseThreadValue(scratch, self.ctx, self.session_id, parsed.value, self.timezone_offset_minutes, self.sink);
+        }
+    };
+
+    var handler = Handler{
+        .ctx = ctx,
+        .session_id = session_id,
+        .timezone_offset_minutes = timezone_offset_minutes,
+        .sink = sink,
+    };
+
+    try provider.withJsonDocumentReader(
+        allocator,
+        ctx,
+        runtime,
+        file_path,
+        .{
+            .max_bytes = 64 * 1024 * 1024,
+            .open_error_message = "unable to open amp session file",
+            .stat_error_message = "unable to stat amp session file",
+        },
+        &handler,
+        Handler.handle,
+    );
 }
 
-fn parseThreadPayload(
+fn parseThreadValue(
     allocator: std.mem.Allocator,
     ctx: *const provider.ParseContext,
     session_id: []const u8,
-    payload: []const u8,
+    root_value: std.json.Value,
     timezone_offset_minutes: i32,
     sink: provider.EventSink,
 ) !void {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
-    defer parsed.deinit();
-
-    const root = switch (parsed.value) {
+    const root = switch (root_value) {
         .object => |o| o,
         else => return,
     };
@@ -229,10 +256,14 @@ test "amp parser emits usage events from ledger + message usage" {
         .legacy_fallback_model = null,
         .cached_counts_overlap_input = false,
     };
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const runtime = provider.ParseRuntime{ .io = io_single.io() };
 
     try parseSessionFile(
         worker_allocator,
         &ctx,
+        &runtime,
         "amp-fixture",
         "fixtures/amp/basic.json",
         null,

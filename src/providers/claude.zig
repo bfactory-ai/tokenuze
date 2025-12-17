@@ -86,6 +86,7 @@ const EventBuilder = struct {
 fn parseClaudeSessionFile(
     allocator: std.mem.Allocator,
     ctx: *const provider.ParseContext,
+    runtime: *const provider.ParseRuntime,
     session_id: []const u8,
     file_path: []const u8,
     deduper: ?*MessageDeduper,
@@ -111,6 +112,7 @@ fn parseClaudeSessionFile(
     try provider.streamJsonLines(
         allocator,
         ctx,
+        runtime,
         file_path,
         .{
             .max_bytes = 128 * 1024 * 1024,
@@ -272,10 +274,14 @@ test "claude parser emits assistant usage events and respects overrides" {
         .legacy_fallback_model = null,
         .cached_counts_overlap_input = false,
     };
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const runtime = provider.ParseRuntime{ .io = io_single.io() };
 
     try parseClaudeSessionFile(
         worker_allocator,
         &ctx,
+        &runtime,
         "claude-fixture",
         "fixtures/claude/basic.jsonl",
         &deduper,
