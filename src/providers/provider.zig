@@ -21,6 +21,7 @@ pub const ParseContext = struct {
     provider_name: []const u8,
     legacy_fallback_model: ?[]const u8,
     cached_counts_overlap_input: bool,
+    io: ?std.Io = null,
 
     pub fn logWarning(self: ParseContext, file_path: []const u8, message: []const u8, err: anyerror) void {
         std.log.warn(
@@ -1228,6 +1229,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 shared: *SharedContext,
                 work_index: *std.atomic.Value(usize),
                 timezone_offset: i32,
+                io: std.Io,
             };
 
             const TaskFn = struct {
@@ -1281,6 +1283,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
 
                         parseSessionFile(
                             worker_allocator,
+                            args.io,
                             session_id,
                             absolute_path,
                             shared_ctx.deduper,
@@ -1301,6 +1304,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 .shared = &shared,
                 .work_index = &work_index,
                 .timezone_offset = timezone_offset,
+                .io = io,
             };
 
             for (0..worker_count) |_| {
@@ -1325,13 +1329,16 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
 
         fn parseSessionFile(
             allocator: std.mem.Allocator,
+            io: std.Io,
             session_id: []const u8,
             file_path: []const u8,
             deduper: ?*MessageDeduper,
             timezone_offset_minutes: i32,
             sink: EventSink,
         ) !void {
-            try parse_fn(allocator, &parse_context, session_id, file_path, deduper, timezone_offset_minutes, sink);
+            var ctx = parse_context;
+            ctx.io = io;
+            try parse_fn(allocator, &ctx, session_id, file_path, deduper, timezone_offset_minutes, sink);
         }
 
         test "pricing parser stores manifest entries" {

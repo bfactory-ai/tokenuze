@@ -211,9 +211,7 @@ fn parseSessionFile(
     var session_label = session_id;
     var session_label_overridden = false;
 
-    var io_single = std.Io.Threaded.init_single_threaded;
-    defer io_single.deinit();
-    const io = io_single.io();
+    const io = ctx.io orelse return error.MissingIoContext;
 
     const resolved_id = determineSessionIdentifier(allocator, ctx, file_path) catch |err| {
         ctx.logWarning(file_path, "failed to read opencode session metadata", err);
@@ -387,10 +385,15 @@ fn parseMessageFileTestWrapper(
     timezone_offset_minutes: i32,
     sink: provider.EventSink,
 ) !void {
-    const ctx = provider.ParseContext{
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const io = io_single.io();
+
+    var ctx = provider.ParseContext{
         .provider_name = "opencode-test",
         .legacy_fallback_model = null,
         .cached_counts_overlap_input = false,
+        .io = io,
     };
 
     const absolute_path = try std.fs.cwd().realpathAlloc(allocator, session_path);
