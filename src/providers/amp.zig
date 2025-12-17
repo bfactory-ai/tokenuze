@@ -35,6 +35,7 @@ const LedgerTokens = struct {
 fn parseSessionFile(
     allocator: std.mem.Allocator,
     ctx: *const provider.ParseContext,
+    runtime: *const provider.ParseRuntime,
     session_id: []const u8,
     file_path: []const u8,
     deduper: ?*provider.MessageDeduper,
@@ -42,175 +43,153 @@ fn parseSessionFile(
     sink: provider.EventSink,
 ) !void {
     _ = deduper;
-    const payload = try std.fs.cwd().readFileAlloc(file_path, allocator, .limited(64 * 1024 * 1024));
-    defer allocator.free(payload);
-
-    try parseThreadPayload(allocator, ctx, session_id, payload, timezone_offset_minutes, sink);
-}
-
-fn parseThreadPayload(
-    allocator: std.mem.Allocator,
-    ctx: *const provider.ParseContext,
-    session_id: []const u8,
-    payload: []const u8,
-    timezone_offset_minutes: i32,
-    sink: provider.EventSink,
-) !void {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
-    defer parsed.deinit();
-
-    const root = switch (parsed.value) {
-        .object => |o| o,
-        else => return,
+    const MessageUsage = struct {
+        model: ?[]const u8 = null,
+        inputTokens: ?u64 = null,
+        cacheCreationInputTokens: ?u64 = null,
+        cacheReadInputTokens: ?u64 = null,
+        outputTokens: ?u64 = null,
+        reasoningOutputTokens: ?u64 = null,
+        totalInputTokens: ?u64 = null,
+        totalTokens: ?u64 = null,
     };
 
-    const messages_val = root.get("messages") orelse return;
-    const ledger_val = root.get("usageLedger") orelse return;
-
-    const messages = switch (messages_val) {
-        .array => |arr| arr,
-        else => return,
+    const Message = struct {
+        messageId: ?u64 = null,
+        usage: ?MessageUsage = null,
     };
 
-    const ledger_obj = switch (ledger_val) {
-        .object => |o| o,
-        else => return,
+    const LedgerTokensJson = struct {
+        input: ?u64 = null,
+        output: ?u64 = null,
     };
 
-    const events_val = ledger_obj.get("events") orelse return;
-    const events = switch (events_val) {
-        .array => |arr| arr,
-        else => return,
+    const LedgerEvent = struct {
+        timestamp: ?[]const u8 = null,
+        model: ?[]const u8 = null,
+        tokens: ?LedgerTokensJson = null,
+        fromMessageId: ?u64 = null,
+        toMessageId: ?u64 = null,
     };
 
-    var usage_by_message = std.AutoHashMap(u64, UsageEntry).init(allocator);
-    defer usage_by_message.deinit();
+    const UsageLedger = struct {
+        events: []LedgerEvent = &.{},
+    };
 
-    for (messages.items) |msg_val| {
-        const msg_obj = switch (msg_val) {
-            .object => |o| o,
-            else => continue,
-        };
+    const SessionDoc = struct {
+        messages: []Message = &.{},
+        usageLedger: ?UsageLedger = null,
+    };
 
-        const message_id_val = msg_obj.get("messageId") orelse continue;
-        const message_id = switch (message_id_val) {
-            .integer => |i| @as(u64, @intCast(i)),
-            .float => |f| @as(u64, @intFromFloat(f)),
-            else => continue,
-        };
+    const Handler = struct {
+        allocator: std.mem.Allocator,
+        ctx: *const provider.ParseContext,
+        session_id: []const u8,
+        timezone_offset_minutes: i32,
+        sink: provider.EventSink,
 
-        const usage_val = msg_obj.get("usage") orelse continue;
-        const usage_obj = switch (usage_val) {
-            .object => |o| o,
-            else => continue,
-        };
+        fn run(self: *@This(), scratch: std.mem.Allocator, reader: *std.json.Reader) !void {
+            var parsed = try std.json.parseFromTokenSource(SessionDoc, scratch, reader, .{
+                .ignore_unknown_fields = true,
+            });
+            defer parsed.deinit();
 
-        var entry = UsageEntry{};
-        if (usage_obj.get("model")) |model_val| {
-            if (model_val == .string) entry.model = model_val.string;
-        }
+            var usage_by_message = std.AutoHashMap(u64, UsageEntry).init(scratch);
+            defer usage_by_message.deinit();
 
-        var total_input_override: ?u64 = null;
-        var total_tokens_override: ?u64 = null;
+            for (parsed.value.messages) |msg| {
+                const message_id = msg.messageId orelse continue;
+                const usage_json = msg.usage orelse continue;
 
-        entry.usage.input_tokens = if (usage_obj.get("inputTokens")) |val| parseU64(val) else 0;
-        entry.usage.cache_creation_input_tokens = if (usage_obj.get("cacheCreationInputTokens")) |val| parseU64(val) else 0;
-        entry.usage.cached_input_tokens = if (usage_obj.get("cacheReadInputTokens")) |val| parseU64(val) else 0;
-        entry.usage.output_tokens = if (usage_obj.get("outputTokens")) |val| parseU64(val) else 0;
-        entry.usage.reasoning_output_tokens = if (usage_obj.get("reasoningOutputTokens")) |val| parseU64(val) else 0;
-        total_input_override = if (usage_obj.get("totalInputTokens")) |val| parseU64(val) else null;
-        total_tokens_override = if (usage_obj.get("totalTokens")) |val| parseU64(val) else null;
+                var entry = UsageEntry{};
+                entry.model = usage_json.model;
 
-        const total_input = total_input_override orelse
-            (entry.usage.input_tokens + entry.usage.cache_creation_input_tokens + entry.usage.cached_input_tokens);
-        entry.usage.total_tokens = total_tokens_override orelse
-            (total_input + entry.usage.output_tokens + entry.usage.reasoning_output_tokens);
+                entry.usage.input_tokens = usage_json.inputTokens orelse 0;
+                entry.usage.cache_creation_input_tokens = usage_json.cacheCreationInputTokens orelse 0;
+                entry.usage.cached_input_tokens = usage_json.cacheReadInputTokens orelse 0;
+                entry.usage.output_tokens = usage_json.outputTokens orelse 0;
+                entry.usage.reasoning_output_tokens = usage_json.reasoningOutputTokens orelse 0;
 
-        try usage_by_message.put(message_id, entry);
-    }
+                const total_input = usage_json.totalInputTokens orelse
+                    (entry.usage.input_tokens +| entry.usage.cache_creation_input_tokens +| entry.usage.cached_input_tokens);
+                entry.usage.total_tokens = usage_json.totalTokens orelse
+                    (total_input +| entry.usage.output_tokens +| entry.usage.reasoning_output_tokens);
 
-    for (events.items) |event_val| {
-        const event_obj = switch (event_val) {
-            .object => |o| o,
-            else => continue,
-        };
-
-        const target_id = blk: {
-            if (event_obj.get("toMessageId")) |v| {
-                break :blk parseU64(v);
+                try usage_by_message.put(message_id, entry);
             }
-            if (event_obj.get("fromMessageId")) |v| {
-                break :blk parseU64(v);
-            }
-            continue;
-        };
 
-        const ts_val = event_obj.get("timestamp") orelse continue;
-        const ts_slice = switch (ts_val) {
-            .string => ts_val.string,
-            else => continue,
-        };
-        var timestamp_info = (try provider.timestampFromSlice(allocator, ts_slice, timezone_offset_minutes)) orelse continue;
-        var timestamp_moved = false;
-        defer if (!timestamp_moved and timestamp_info.text.len > 0) allocator.free(timestamp_info.text);
+            const ledger = parsed.value.usageLedger orelse return;
+            for (ledger.events) |event| {
+                const target_id = event.toMessageId orelse event.fromMessageId orelse continue;
+                const ts = event.timestamp orelse continue;
 
-        var ledger_tokens = LedgerTokens{};
-        if (event_obj.get("tokens")) |tokens_val| {
-            switch (tokens_val) {
-                .object => |tok_obj| {
-                    ledger_tokens.input = if (tok_obj.get("input")) |v| parseU64(v) else 0;
-                    ledger_tokens.output = if (tok_obj.get("output")) |v| parseU64(v) else 0;
-                },
-                else => {},
+                const timestamp_info = (try provider.timestampFromSlice(
+                    self.allocator,
+                    ts,
+                    self.timezone_offset_minutes,
+                )) orelse continue;
+
+                var timestamp_slot: ?provider.TimestampInfo = timestamp_info;
+                defer if (timestamp_slot) |info| self.allocator.free(info.text);
+
+                var ledger_tokens = LedgerTokens{};
+                if (event.tokens) |tok| {
+                    ledger_tokens.input = tok.input orelse 0;
+                    ledger_tokens.output = tok.output orelse 0;
+                }
+
+                const ledger_model = event.model;
+
+                var usage = model.TokenUsage{
+                    .input_tokens = ledger_tokens.input,
+                    .output_tokens = ledger_tokens.output,
+                    .total_tokens = ledger_tokens.input + ledger_tokens.output,
+                };
+                var raw_model: ?[]const u8 = ledger_model;
+
+                if (usage_by_message.get(target_id)) |msg_usage| {
+                    usage = msg_usage.usage;
+                    if (msg_usage.model) |m| raw_model = m;
+                }
+
+                const model_slice = raw_model orelse continue;
+
+                var model_state = provider.ModelState{};
+                provider.emitUsageEventWithTimestamp(
+                    self.ctx,
+                    self.allocator,
+                    &model_state,
+                    self.sink,
+                    self.session_id,
+                    &timestamp_slot,
+                    usage,
+                    model_slice,
+                ) catch continue;
             }
         }
-
-        const ledger_model: ?[]const u8 = blk: {
-            if (event_obj.get("model")) |v| switch (v) {
-                .string => break :blk v.string,
-                else => {},
-            };
-            break :blk null;
-        };
-
-        var usage = model.TokenUsage{
-            .input_tokens = ledger_tokens.input,
-            .output_tokens = ledger_tokens.output,
-            .total_tokens = ledger_tokens.input + ledger_tokens.output,
-        };
-        var raw_model: ?[]const u8 = ledger_model;
-
-        if (usage_by_message.get(target_id)) |msg_usage| {
-            usage = msg_usage.usage;
-            if (msg_usage.model) |m| raw_model = m;
-        }
-
-        if (raw_model == null) continue;
-
-        var timestamp_slot: ?provider.TimestampInfo = timestamp_info;
-        var model_state = provider.ModelState{};
-        provider.emitUsageEventWithTimestamp(
-            ctx,
-            allocator,
-            &model_state,
-            sink,
-            session_id,
-            &timestamp_slot,
-            usage,
-            raw_model.?,
-        ) catch continue;
-
-        timestamp_slot = null;
-        timestamp_moved = true;
-    }
-}
-
-fn parseU64(val: std.json.Value) u64 {
-    return switch (val) {
-        .integer => |i| @as(u64, @intCast(i)),
-        .float => |f| @as(u64, @intFromFloat(f)),
-        else => 0,
     };
+
+    var handler = Handler{
+        .allocator = allocator,
+        .ctx = ctx,
+        .session_id = session_id,
+        .timezone_offset_minutes = timezone_offset_minutes,
+        .sink = sink,
+    };
+
+    try provider.withJsonDocumentReader(
+        allocator,
+        ctx,
+        runtime,
+        file_path,
+        .{
+            .max_bytes = 64 * 1024 * 1024,
+            .open_error_message = "unable to open amp session file",
+            .stat_error_message = "unable to stat amp session file",
+        },
+        &handler,
+        Handler.run,
+    );
 }
 
 test "amp parser emits usage events from ledger + message usage" {
@@ -229,10 +208,14 @@ test "amp parser emits usage events from ledger + message usage" {
         .legacy_fallback_model = null,
         .cached_counts_overlap_input = false,
     };
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const runtime = provider.ParseRuntime{ .io = io_single.io() };
 
     try parseSessionFile(
         worker_allocator,
         &ctx,
+        &runtime,
         "amp-fixture",
         "fixtures/amp/basic.json",
         null,

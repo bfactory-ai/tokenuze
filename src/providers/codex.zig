@@ -60,6 +60,7 @@ const ObjectFieldContext = struct {
 fn parseSessionFile(
     allocator: std.mem.Allocator,
     ctx: *const provider.ParseContext,
+    runtime: *const provider.ParseRuntime,
     session_id: []const u8,
     file_path: []const u8,
     deduper: ?*provider.MessageDeduper,
@@ -84,6 +85,7 @@ fn parseSessionFile(
     try provider.streamJsonLines(
         allocator,
         ctx,
+        runtime,
         file_path,
         .{
             .max_bytes = 128 * 1024 * 1024,
@@ -324,10 +326,14 @@ test "codex parser emits usage events from token_count entries" {
         .legacy_fallback_model = "gpt-5",
         .cached_counts_overlap_input = true,
     };
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const runtime = provider.ParseRuntime{ .io = io_single.io() };
 
     try parseSessionFile(
         worker_allocator,
         &ctx,
+        &runtime,
         "codex-fixture",
         "fixtures/codex/basic.jsonl",
         null,
