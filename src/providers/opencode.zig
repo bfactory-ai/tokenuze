@@ -338,7 +338,7 @@ fn parseMessageFile(
     const file = try std.fs.openFileAbsolute(file_path, .{});
     defer file.close();
 
-    var reader_buffer: [64 * 1024]u8 = undefined;
+    var reader_buffer: [4 * 1024]u8 = undefined;
     var file_reader = file.readerStreaming(io, reader_buffer[0..]);
     var json_reader = std.json.Reader.init(allocator, &file_reader.interface);
     defer json_reader.deinit();
