@@ -124,10 +124,10 @@ fn parseSessionFile(
                 };
                 if (usage_raw.total_tokens == 0) {
                     usage_raw.total_tokens =
-                        usage_raw.input_tokens +
-                        usage_raw.cache_creation_input_tokens +
-                        usage_raw.cached_input_tokens +
-                        usage_raw.output_tokens +
+                        usage_raw.input_tokens +|
+                        usage_raw.cache_creation_input_tokens +|
+                        usage_raw.cached_input_tokens +|
+                        usage_raw.output_tokens +|
                         usage_raw.reasoning_output_tokens;
                 }
 
