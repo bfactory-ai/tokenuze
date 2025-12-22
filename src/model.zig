@@ -74,13 +74,9 @@ pub const TokenUsage = struct {
     }
 
     pub fn cost(self: TokenUsage, pricing: ModelPricing) f64 {
-        const overlap = if (self.input_tokens >= self.cached_input_tokens) self.cached_input_tokens else 0;
-        const non_cached = self.input_tokens - overlap;
-        const cached = self.cached_input_tokens;
-
         const cache_creation_cost = (@as(f64, @floatFromInt(self.cache_creation_input_tokens)) / million) * pricing.cache_creation_cost_per_m;
-        const input_cost = (@as(f64, @floatFromInt(non_cached)) / million) * pricing.input_cost_per_m;
-        const cached_cost = (@as(f64, @floatFromInt(cached)) / million) * pricing.cached_input_cost_per_m;
+        const input_cost = (@as(f64, @floatFromInt(self.input_tokens)) / million) * pricing.input_cost_per_m;
+        const cached_cost = (@as(f64, @floatFromInt(self.cached_input_tokens)) / million) * pricing.cached_input_cost_per_m;
         const output_cost = (@as(f64, @floatFromInt(self.output_tokens)) / million) * pricing.output_cost_per_m;
 
         return cache_creation_cost + input_cost + cached_cost + output_cost;
@@ -1230,4 +1226,32 @@ test "resolveModelPricing handles hyphen and basename variants" {
     const hyphen_rate = resolveModelPricing(allocator, &map, "My Test Model") orelse unreachable;
     try std.testing.expectEqual(@as(f64, 7), hyphen_rate.output_cost_per_m);
     try std.testing.expect(map.get("My Test Model") != null);
+}
+
+test "TokenUsage.cost correctly handles already normalized overlapping tokens" {
+    const pricing = ModelPricing{
+        .input_cost_per_m = 1.0,
+        .cache_creation_cost_per_m = 0,
+        .cached_input_cost_per_m = 0.5,
+        .output_cost_per_m = 0,
+    };
+
+    // If a provider has already normalized the usage (e.g. Codex after normalizeUsageDelta),
+    // input_tokens is already the non-cached part.
+    // For example: Raw 1200 total input, 200 cached.
+    // Normalized: 1000 input_tokens, 200 cached_input_tokens.
+    // Expected cost: (1000 * 1.0 + 200 * 0.5) / 1,000,000 = 0.0011
+    const usage = TokenUsage{
+        .input_tokens = 1000,
+        .cached_input_tokens = 200,
+        .cache_creation_input_tokens = 0,
+        .output_tokens = 0,
+        .reasoning_output_tokens = 0,
+        .total_tokens = 1200,
+    };
+
+    const calculated_cost = usage.cost(pricing);
+    const expected_cost = 1100.0 / million;
+
+    try std.testing.expectApproxEqAbs(expected_cost, calculated_cost, 0.0000000001);
 }

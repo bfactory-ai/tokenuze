@@ -349,5 +349,6 @@ test "codex parser emits usage events from token_count entries" {
     try std.testing.expectEqual(@as(u64, 1000), event.usage.input_tokens);
     try std.testing.expectEqual(@as(u64, 200), event.usage.cached_input_tokens);
     try std.testing.expectEqual(@as(u64, 50), event.usage.output_tokens);
+    try std.testing.expectEqual(@as(u64, 1450), event.usage.total_tokens);
     try std.testing.expectEqual(@as(u64, 1200), event.display_input_tokens);
 }

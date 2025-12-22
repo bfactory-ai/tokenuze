@@ -40,8 +40,11 @@ pub const ParseContext = struct {
     }
 
     pub fn computeDisplayInput(self: ParseContext, usage: model.TokenUsage) u64 {
-        if (!self.cached_counts_overlap_input) return usage.input_tokens;
-        return std.math.add(u64, usage.input_tokens, usage.cached_input_tokens) catch std.math.maxInt(u64);
+        _ = self;
+        var total = usage.input_tokens;
+        total = std.math.add(u64, total, usage.cache_creation_input_tokens) catch std.math.maxInt(u64);
+        total = std.math.add(u64, total, usage.cached_input_tokens) catch std.math.maxInt(u64);
+        return total;
     }
 
     pub fn captureModel(
