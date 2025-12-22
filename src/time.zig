@@ -190,7 +190,7 @@ fn isoDateForLocalTimezone(timestamp: []const u8) TimestampError![10]u8 {
     const casted = std.math.cast(TimeT, utc_seconds) orelse return error.OutOfRange;
     var t_value: TimeT = casted;
     var local_tm: c.tm = undefined;
-    if (c.localtime_r(&t_value, &local_tm) == null) return error.InvalidTimeZone;
+    try localtimeSafe(&t_value, &local_tm);
 
     const year = @as(i32, local_tm.tm_year) + 1900;
     if (year < 0 or year > 9999) return error.OutOfRange;
@@ -213,7 +213,7 @@ fn formatTimestampForLocalTimezone(allocator: std.mem.Allocator, timestamp: []co
     const casted = std.math.cast(TimeT, utc_seconds) orelse return error.OutOfRange;
     var t_value: TimeT = casted;
     var local_tm: c.tm = undefined;
-    if (c.localtime_r(&t_value, &local_tm) == null) return error.InvalidTimeZone;
+    try localtimeSafe(&t_value, &local_tm);
 
     const year = @as(i32, local_tm.tm_year) + 1900;
     if (year < 0 or year > 9999) return error.OutOfRange;
@@ -482,4 +482,21 @@ fn tmToUnixSeconds(tm_value: c.tm) i64 {
         @as(i64, hour) * 3600 +
         @as(i64, minute) * 60 +
         @as(i64, second);
+}
+
+fn localtimeSafe(t_value: *c.time_t, out_tm: *c.tm) TimestampError!void {
+    if (builtin.target.os.tag == .windows) {
+        if (@hasDecl(c, "localtime_s")) {
+            if (c.localtime_s(out_tm, t_value) != 0) return error.InvalidTimeZone;
+            return;
+        }
+        if (@hasDecl(c, "localtime")) {
+            const res = c.localtime(t_value) orelse return error.InvalidTimeZone;
+            out_tm.* = res.*;
+            return;
+        }
+        return error.InvalidTimeZone;
+    } else {
+        if (c.localtime_r(t_value, out_tm) == null) return error.InvalidTimeZone;
+    }
 }
