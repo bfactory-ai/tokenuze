@@ -76,7 +76,7 @@ pub fn parseTimezoneOffsetMinutes(input: []const u8) ParseTimezoneError!i32 {
     var remaining = trimmed;
     if (remaining.len >= 3 and std.ascii.eqlIgnoreCase(remaining[0..3], "utc")) {
         remaining = remaining[3..];
-        remaining = std.mem.trimLeft(u8, remaining, " \t");
+        remaining = std.mem.trimStart(u8, remaining, " \t");
         if (remaining.len == 0) return 0;
     }
 
@@ -299,7 +299,7 @@ fn parseIso8601ToUtcSeconds(timestamp: []const u8) TimestampError!i64 {
 
     if (month == 0 or month > 12) return error.InvalidDate;
     const epoch = std.time.epoch;
-    const month_enum = std.meta.intToEnum(epoch.Month, month) catch return error.InvalidDate;
+    const month_enum: epoch.Month = @enumFromInt(month);
     const max_day = epoch.getDaysInMonth(year, month_enum);
     if (day == 0 or day > max_day) return error.InvalidDate;
 
