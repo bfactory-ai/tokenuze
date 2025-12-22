@@ -183,7 +183,7 @@ fn parseSessionFile(
         runtime,
         file_path,
         .{
-            .max_bytes = 128 * 1024 * 1024,
+            .max_bytes = 1024 * 1024 * 1024,
             .open_error_message = "failed to open gemini session file",
             .stat_error_message = "error while statting gemini session file",
         },
@@ -233,5 +233,5 @@ test "gemini parser converts message totals into usage deltas" {
     try std.testing.expectEqual(@as(u64, 125), event.usage.output_tokens);
     try std.testing.expectEqual(@as(u64, 20), event.usage.reasoning_output_tokens);
     try std.testing.expectEqual(@as(u64, 4645), event.usage.total_tokens);
-    try std.testing.expectEqual(@as(u64, 4000), event.display_input_tokens);
+    try std.testing.expectEqual(@as(u64, 4500), event.display_input_tokens);
 }

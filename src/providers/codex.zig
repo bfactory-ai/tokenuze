@@ -8,6 +8,15 @@ const ModelState = provider.ModelState;
 
 const token_count_type = "token_count";
 
+const CODEX_USAGE_FIELDS = [_]provider.UsageFieldDescriptor{
+    .{ .key = "input_tokens", .field = .input_tokens },
+    .{ .key = "cached_input_tokens", .field = .cached_input_tokens },
+    .{ .key = "cache_read_input_tokens", .field = .cache_read_input_tokens },
+    .{ .key = "output_tokens", .field = .output_tokens },
+    .{ .key = "reasoning_output_tokens", .field = .reasoning_output_tokens },
+    .{ .key = "total_tokens", .field = .total_tokens },
+};
+
 const fallback_pricing = [_]provider.FallbackPricingEntry{
     .{ .name = "gpt-5", .pricing = .{
         .input_cost_per_m = 1.25,
@@ -88,7 +97,7 @@ fn parseSessionFile(
         runtime,
         file_path,
         .{
-            .max_bytes = 128 * 1024 * 1024,
+            .max_bytes = 1024 * 1024 * 1024,
             .open_error_message = "unable to open session file",
             .read_error_message = "error while reading session stream",
             .advance_error_message = "error while advancing session stream",
@@ -194,7 +203,7 @@ const LineHandler = struct {
             .model = resolved.name,
             .usage = delta,
             .is_fallback = resolved.is_fallback,
-            .display_input_tokens = self.ctx.computeDisplayInput(delta),
+            .display_input_tokens = provider.ParseContext.computeDisplayInput(delta),
         };
         try self.sink.emit(event);
     }
@@ -281,11 +290,11 @@ fn parseInfoField(
     if (try parseSharedPayloadField(allocator, reader, key, payload_result)) return;
 
     if (std.mem.eql(u8, key, "last_token_usage")) {
-        payload_result.last_usage = try provider.jsonParseUsageObject(allocator, reader);
+        payload_result.last_usage = try provider.jsonParseUsageObjectWithDescriptors(allocator, reader, CODEX_USAGE_FIELDS[0..]);
         return;
     }
     if (std.mem.eql(u8, key, "total_token_usage")) {
-        payload_result.total_usage = try provider.jsonParseUsageObject(allocator, reader);
+        payload_result.total_usage = try provider.jsonParseUsageObjectWithDescriptors(allocator, reader, CODEX_USAGE_FIELDS[0..]);
         return;
     }
 
@@ -349,5 +358,6 @@ test "codex parser emits usage events from token_count entries" {
     try std.testing.expectEqual(@as(u64, 1000), event.usage.input_tokens);
     try std.testing.expectEqual(@as(u64, 200), event.usage.cached_input_tokens);
     try std.testing.expectEqual(@as(u64, 50), event.usage.output_tokens);
+    try std.testing.expectEqual(@as(u64, 1450), event.usage.total_tokens);
     try std.testing.expectEqual(@as(u64, 1200), event.display_input_tokens);
 }

@@ -5,8 +5,16 @@ const builtin = @import("builtin");
 const c = @cImport({
     @cInclude("time.h");
 });
+const win = if (builtin.target.os.tag == .windows)
+    @cImport({
+        @cInclude("windows.h");
+    })
+else
+    struct {};
 
 pub const default_timezone_offset_minutes: i32 = 0;
+// Sentinel value to indicate "use system local timezone rules (including DST) per timestamp".
+pub const local_timezone_sentinel: i32 = std.math.minInt(i16);
 
 pub const TimestampError = error{
     InvalidFormat,
@@ -24,6 +32,9 @@ pub const ParseTimezoneError = error{
 const seconds_per_day: i64 = 24 * 60 * 60;
 
 pub fn isoDateForTimezone(timestamp: []const u8, offset_minutes: i32) TimestampError![10]u8 {
+    if (offset_minutes == local_timezone_sentinel) {
+        return isoDateForLocalTimezone(timestamp);
+    }
     const utc_seconds = try parseIso8601ToUtcSeconds(timestamp);
     return utcSecondsToOffsetIsoDate(utc_seconds, offset_minutes);
 }
@@ -33,6 +44,9 @@ pub fn formatTimestampForTimezone(
     timestamp: []const u8,
     offset_minutes: i32,
 ) TimestampError![]u8 {
+    if (offset_minutes == local_timezone_sentinel) {
+        return formatTimestampForLocalTimezone(allocator, timestamp);
+    }
     const utc_seconds = try parseIso8601ToUtcSeconds(timestamp);
     const local_seconds_i64 = utc_seconds + (@as(i64, offset_minutes) * 60);
     const local_seconds = std.math.cast(u64, local_seconds_i64) orelse return error.OutOfRange;
@@ -68,7 +82,7 @@ pub fn parseTimezoneOffsetMinutes(input: []const u8) ParseTimezoneError!i32 {
     var remaining = trimmed;
     if (remaining.len >= 3 and std.ascii.eqlIgnoreCase(remaining[0..3], "utc")) {
         remaining = remaining[3..];
-        remaining = std.mem.trimLeft(u8, remaining, " \t");
+        remaining = std.mem.trimStart(u8, remaining, " \t");
         if (remaining.len == 0) return 0;
     }
 
@@ -163,12 +177,84 @@ pub fn detectLocalTimezoneOffsetMinutes() !i32 {
 }
 
 pub fn formatTimezoneLabel(buffer: *[16]u8, offset_minutes: i32) []const u8 {
-    const clamped = std.math.clamp(offset_minutes, -12 * 60, 14 * 60);
+    const resolved = if (offset_minutes == local_timezone_sentinel)
+        (detectLocalTimezoneOffsetMinutes() catch default_timezone_offset_minutes)
+    else
+        offset_minutes;
+    const clamped = std.math.clamp(resolved, -12 * 60, 14 * 60);
     const sign: u8 = if (clamped >= 0) '+' else '-';
     const abs_minutes = @abs(clamped);
     const hours = abs_minutes / 60;
     const mins = abs_minutes % 60;
     return std.fmt.bufPrint(buffer, "UTC{c}{d:0>2}:{d:0>2}", .{ sign, hours, mins }) catch unreachable;
+}
+
+fn isoDateForLocalTimezone(timestamp: []const u8) TimestampError![10]u8 {
+    const utc_seconds = try parseIso8601ToUtcSeconds(timestamp);
+    if (utc_seconds < 0) return error.OutOfRange;
+    const TimeT = c.time_t;
+    const casted = std.math.cast(TimeT, utc_seconds) orelse return error.OutOfRange;
+    var t_value: TimeT = casted;
+    var local_tm: c.tm = undefined;
+    try localtimeSafe(&t_value, &local_tm);
+
+    const year = @as(i32, local_tm.tm_year) + 1900;
+    if (year < 0 or year > 9999) return error.OutOfRange;
+    const month = @as(u8, @intCast(local_tm.tm_mon + 1));
+    const day = @as(u8, @intCast(local_tm.tm_mday));
+
+    var buffer: [10]u8 = undefined;
+    writeFourDigits(@intCast(year), buffer[0..4]);
+    buffer[4] = '-';
+    writeTwoDigits(month, buffer[5..7]);
+    buffer[7] = '-';
+    writeTwoDigits(day, buffer[8..10]);
+    return buffer;
+}
+
+fn formatTimestampForLocalTimezone(allocator: std.mem.Allocator, timestamp: []const u8) TimestampError![]u8 {
+    const utc_seconds = try parseIso8601ToUtcSeconds(timestamp);
+    if (utc_seconds < 0) return error.OutOfRange;
+    const TimeT = c.time_t;
+    const casted = std.math.cast(TimeT, utc_seconds) orelse return error.OutOfRange;
+    var t_value: TimeT = casted;
+    var local_tm: c.tm = undefined;
+    try localtimeSafe(&t_value, &local_tm);
+
+    const year = @as(i32, local_tm.tm_year) + 1900;
+    if (year < 0 or year > 9999) return error.OutOfRange;
+    const month = @as(u8, @intCast(local_tm.tm_mon + 1));
+    const day = @as(u8, @intCast(local_tm.tm_mday));
+
+    const tz_minutes = if (@hasField(c.tm, "tm_gmtoff"))
+        @as(i32, @intCast(@divTrunc(@field(local_tm, "tm_gmtoff"), 60)))
+    else if (@hasField(c.tm, "__tm_gmtoff"))
+        @as(i32, @intCast(@divTrunc(@field(local_tm, "__tm_gmtoff"), 60)))
+    else blk: {
+        var utc_tm: c.tm = undefined;
+        gmtimeSafe(&t_value, &utc_tm) catch break :blk default_timezone_offset_minutes;
+        const local_secs = tmToUnixSeconds(local_tm);
+        const utc_secs = tmToUnixSeconds(utc_tm);
+        const delta = local_secs - utc_secs;
+        break :blk @as(i32, @intCast(@divTrunc(delta, 60)));
+    };
+
+    var tz_buf: [16]u8 = undefined;
+    const tz_label = formatTimezoneLabel(&tz_buf, tz_minutes);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} {s}",
+        .{
+            year,
+            month,
+            day,
+            @as(u8, @intCast(local_tm.tm_hour)),
+            @as(u8, @intCast(local_tm.tm_min)),
+            @as(u8, @intCast(local_tm.tm_sec)),
+            tz_label,
+        },
+    );
 }
 
 pub fn formatTimezoneLabelAlloc(allocator: std.mem.Allocator, offset_minutes: i32) ![]u8 {
@@ -225,7 +311,7 @@ fn parseIso8601ToUtcSeconds(timestamp: []const u8) TimestampError!i64 {
 
     if (month == 0 or month > 12) return error.InvalidDate;
     const epoch = std.time.epoch;
-    const month_enum = std.meta.intToEnum(epoch.Month, month) catch return error.InvalidDate;
+    const month_enum: epoch.Month = @enumFromInt(month);
     const max_day = epoch.getDaysInMonth(year, month_enum);
     if (day == 0 or day > max_day) return error.InvalidDate;
 
@@ -408,4 +494,70 @@ fn tmToUnixSeconds(tm_value: c.tm) i64 {
         @as(i64, hour) * 3600 +
         @as(i64, minute) * 60 +
         @as(i64, second);
+}
+
+fn localtimeSafe(t_value: *c.time_t, out_tm: *c.tm) TimestampError!void {
+    if (builtin.target.os.tag == .windows) {
+        out_tm.* = try windowsTimeToTm(t_value, true);
+        return;
+    } else {
+        if (c.localtime_r(t_value, out_tm) == null) return error.InvalidTimeZone;
+    }
+}
+
+fn gmtimeSafe(t_value: *c.time_t, out_tm: *c.tm) TimestampError!void {
+    if (builtin.target.os.tag == .windows) {
+        out_tm.* = try windowsTimeToTm(t_value, false);
+        return;
+    } else {
+        if (c.gmtime_r(t_value, out_tm) == null) return error.InvalidTimeZone;
+    }
+}
+
+fn windowsTimeToTm(t_value: *c.time_t, is_local: bool) TimestampError!c.tm {
+    const raw = std.math.cast(i64, t_value.*) orelse return error.OutOfRange;
+    if (raw < 0) return error.OutOfRange;
+    const unix_secs = @as(u64, @intCast(raw));
+
+    const WINDOWS_TO_UNIX_100NS: u64 = 11_644_473_600 * 10_000_000;
+    const filetime_intervals = unix_secs * 10_000_000 + WINDOWS_TO_UNIX_100NS;
+    const filetime = win.FILETIME{
+        .dwLowDateTime = @as(win.DWORD, @intCast(filetime_intervals & 0xFFFF_FFFF)),
+        .dwHighDateTime = @as(win.DWORD, @intCast(filetime_intervals >> 32)),
+    };
+
+    var utc_system: win.SYSTEMTIME = undefined;
+    if (win.FileTimeToSystemTime(&filetime, &utc_system) == 0) {
+        return error.InvalidTimeZone;
+    }
+
+    var system = utc_system;
+    if (is_local) {
+        if (win.SystemTimeToTzSpecificLocalTime(null, &utc_system, &system) == 0) {
+            return error.InvalidTimeZone;
+        }
+    }
+
+    return systemTimeToTm(system);
+}
+
+fn systemTimeToTm(system: win.SYSTEMTIME) c.tm {
+    var tm_value: c.tm = std.mem.zeroes(c.tm);
+    const year = @as(i32, @intCast(system.wYear));
+    const month = @as(u8, @intCast(system.wMonth));
+    const day = @as(u8, @intCast(system.wDay));
+    tm_value.tm_year = year - 1900;
+    tm_value.tm_mon = @as(c_int, month) - 1;
+    tm_value.tm_mday = @as(c_int, day);
+    tm_value.tm_hour = @as(c_int, system.wHour);
+    tm_value.tm_min = @as(c_int, system.wMinute);
+    tm_value.tm_sec = @as(c_int, system.wSecond);
+    tm_value.tm_isdst = -1;
+
+    const day_count = daysFromCivil(year, month, day);
+    const jan1 = daysFromCivil(year, 1, 1);
+    tm_value.tm_yday = @as(c_int, @intCast(day_count - jan1));
+    const wday = @mod(day_count + 4, 7);
+    tm_value.tm_wday = @as(c_int, @intCast(wday));
+    return tm_value;
 }

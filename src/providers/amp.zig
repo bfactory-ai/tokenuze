@@ -183,7 +183,7 @@ fn parseSessionFile(
         runtime,
         file_path,
         .{
-            .max_bytes = 64 * 1024 * 1024,
+            .max_bytes = 1024 * 1024 * 1024,
             .open_error_message = "unable to open amp session file",
             .stat_error_message = "unable to stat amp session file",
         },
@@ -232,5 +232,6 @@ test "amp parser emits usage events from ledger + message usage" {
     try testing.expectEqual(@as(u64, 200), event.usage.cached_input_tokens);
     try testing.expectEqual(@as(u64, 50), event.usage.output_tokens);
     try testing.expectEqual(@as(u64, 359), event.usage.total_tokens);
+    try testing.expectEqual(@as(u64, 309), event.display_input_tokens);
     try testing.expectEqualStrings("2025-12-03T02:18:38.333Z", event.timestamp);
 }

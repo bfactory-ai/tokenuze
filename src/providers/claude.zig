@@ -115,7 +115,7 @@ fn parseClaudeSessionFile(
         runtime,
         file_path,
         .{
-            .max_bytes = 128 * 1024 * 1024,
+            .max_bytes = 1024 * 1024 * 1024,
             .open_error_message = "unable to open claude session file",
             .read_error_message = "error while reading claude session stream",
             .advance_error_message = "error while advancing claude session stream",
@@ -298,5 +298,5 @@ test "claude parser emits assistant usage events and respects overrides" {
     try std.testing.expectEqual(@as(u64, 100), event.usage.cache_creation_input_tokens);
     try std.testing.expectEqual(@as(u64, 250), event.usage.cached_input_tokens);
     try std.testing.expectEqual(@as(u64, 600), event.usage.output_tokens);
-    try std.testing.expectEqual(@as(u64, 1500), event.display_input_tokens);
+    try std.testing.expectEqual(@as(u64, 1850), event.display_input_tokens);
 }
