@@ -45,7 +45,11 @@ pub fn streamEvents(
     consumer: provider.EventConsumer,
     progress: ?std.Progress.Node,
 ) !void {
-    var db_paths = try findCrushDbPaths(shared_allocator, temp_allocator);
+    var threaded = std.Io.Threaded.init(shared_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var db_paths = try findCrushDbPaths(shared_allocator, temp_allocator, io);
     defer {
         for (db_paths.items) |p| shared_allocator.free(p);
         db_paths.deinit(shared_allocator);
@@ -66,10 +70,6 @@ pub fn streamEvents(
         break :blk 1;
     };
     const worker_count = @max(@as(usize, 1), @min(db_paths.items.len, cpu_count));
-
-    var threaded = std.Io.Threaded.init(shared_allocator);
-    defer threaded.deinit();
-    const io = threaded.io();
 
     var work_state = WorkState{
         .paths = db_paths.items,
@@ -119,7 +119,7 @@ fn workerMain(state: *WorkState) void {
 }
 
 fn processDb(state: *const WorkState, temp_allocator: std.mem.Allocator, db_path: []const u8) void {
-    std.fs.cwd().access(db_path, .{}) catch |err| {
+    std.Io.Dir.cwd().access(state.io, db_path, .{}) catch |err| {
         if (err == error.FileNotFound) {
             std.log.debug("crush: skipping missing db at {s}", .{db_path});
             return;
@@ -128,7 +128,7 @@ fn processDb(state: *const WorkState, temp_allocator: std.mem.Allocator, db_path
         return;
     };
 
-    const json_rows = runSqliteQuery(temp_allocator, db_path) catch |err| {
+    const json_rows = runSqliteQuery(temp_allocator, state.io, db_path) catch |err| {
         std.log.info("crush: skipping {s}, sqlite3 query failed ({s})", .{ db_path, @errorName(err) });
         return;
     };
@@ -139,7 +139,7 @@ fn processDb(state: *const WorkState, temp_allocator: std.mem.Allocator, db_path
     };
 }
 
-fn findCrushDbPaths(allocator: std.mem.Allocator, temp_allocator: std.mem.Allocator) !std.ArrayList([]u8) {
+fn findCrushDbPaths(allocator: std.mem.Allocator, temp_allocator: std.mem.Allocator, io: std.Io) !std.ArrayList([]u8) {
     var list = std.ArrayList([]u8).empty;
     errdefer {
         for (list.items) |p| allocator.free(p);
@@ -154,14 +154,14 @@ fn findCrushDbPaths(allocator: std.mem.Allocator, temp_allocator: std.mem.Alloca
         const dir_path = queue.pop().?;
         defer temp_allocator.free(dir_path);
 
-        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true, .follow_symlinks = false }) catch |err| {
+        var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true, .follow_symlinks = false }) catch |err| {
             std.log.debug("crush: skip dir {s} ({s})", .{ dir_path, @errorName(err) });
             continue;
         };
-        defer dir.close();
+        defer dir.close(io);
         var it = dir.iterate();
         while (true) {
-            const entry = it.next() catch |err| {
+            const entry = it.next(io) catch |err| {
                 std.log.debug("crush: iterate failed in {s} ({s})", .{ dir_path, @errorName(err) });
                 break;
             } orelse break;
@@ -211,7 +211,7 @@ test "crush parses sqlite output fixture" {
     try testing.expect(count > 0);
 }
 
-fn runSqliteQuery(allocator: std.mem.Allocator, db_path: []const u8) ![]u8 {
+fn runSqliteQuery(allocator: std.mem.Allocator, io: std.Io, db_path: []const u8) ![]u8 {
     // Query to get sessions with usage, joining messages to find the model.
     // We prioritize messages that have a non-empty model.
     const query =
@@ -226,8 +226,7 @@ fn runSqliteQuery(allocator: std.mem.Allocator, db_path: []const u8) ![]u8 {
     ;
     var argv = [_][]const u8{ "sqlite3", "-json", db_path, query };
 
-    var result = std.process.Child.run(.{
-        .allocator = allocator,
+    var result = std.process.Child.run(allocator, io, .{
         .argv = &argv,
         .max_output_bytes = 64 * 1024 * 1024,
     }) catch |err| {

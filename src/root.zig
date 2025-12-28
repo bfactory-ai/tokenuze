@@ -222,13 +222,17 @@ pub fn findProviderIndex(name: []const u8) ?usize {
 }
 
 pub fn run(allocator: std.mem.Allocator, filters: DateFilters, selection: ProviderSelection) !void {
-    const enable_progress = std.fs.File.stdout().isTty();
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const io = io_single.io();
+
+    const enable_progress = std.Io.File.stdout().isTty(io) catch false;
     logRunStart(filters, selection, enable_progress);
     var summary = try collectSummary(allocator, filters, selection, enable_progress);
     defer summary.deinit(allocator);
 
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, stdout_buffer[0..]);
     const out_writer = &stdout_writer.interface;
     switch (filters.output_format) {
         .table => try render.Renderer.writeTable(out_writer, allocator, summary.builder.items(), &summary.totals),
@@ -457,6 +461,10 @@ fn collectSummaryInternal(
     session_recorder: ?*model.SessionRecorder,
     pricing_cache: ?*PricingCache,
 ) !SummaryResult {
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const io = io_single.io();
+
     var summary_builder = model.SummaryBuilder.init(allocator);
     errdefer summary_builder.deinit(allocator);
     if (session_recorder) |recorder| summary_builder.attachSessionRecorder(recorder);
@@ -468,7 +476,7 @@ fn collectSummaryInternal(
 
     var progress_root: std.Progress.Node = undefined;
     const progress_parent = if (enable_progress) blk: {
-        progress_root = std.Progress.start(.{ .root_name = "Tokenuze" });
+        progress_root = std.Progress.start(io, .{ .root_name = "Tokenuze" });
         break :blk &progress_root;
     } else null;
     defer if (enable_progress) std.Progress.Node.end(progress_root);

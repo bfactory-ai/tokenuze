@@ -21,7 +21,7 @@ The output is a table or JSON, suitable for dashboards.
 ## Installation
 
 - **Prebuilt binaries:** grab the latest release from the [Releases page](https://github.com/bfactory-ai/tokenuze/releases) and put `tokenuze` on your `PATH`.
-- **Build from source:** requires Zig 0.16.0-dev.1657+985a3565c or newer
+- **Build from source:** requires Zig 0.16.0-dev.1859+212968c57 or newer
 
 ```bash
 git clone https://github.com/bfactory-ai/tokenuze.git

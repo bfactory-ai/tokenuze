@@ -46,7 +46,12 @@ pub fn runFixtureParse(
         []const u8,
     ) anyerror!void,
 ) !usize {
-    const json_payload = try std.fs.cwd().readFileAlloc(
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const io = io_single.io();
+
+    const json_payload = try std.Io.Dir.cwd().readFileAlloc(
+        io,
         fixture_path,
         allocator,
         .limited(1 << 20),
@@ -57,10 +62,6 @@ pub fn runFixtureParse(
     defer freeCapturedEvents(allocator, &events);
 
     const consumer = makeCapturingConsumer(&events);
-
-    var io_single = std.Io.Threaded.init_single_threaded;
-    defer io_single.deinit();
-    const io = io_single.io();
 
     try parse_fn(io, allocator, allocator, .{}, consumer, json_payload);
     return events.items.len;

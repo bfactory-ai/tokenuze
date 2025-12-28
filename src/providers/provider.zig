@@ -297,13 +297,13 @@ pub fn withJsonDocumentReader(
     handler_context: anytype,
     comptime handler: fn (@TypeOf(handler_context), std.mem.Allocator, *std.json.Reader) anyerror!void,
 ) !void {
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+    const file = std.Io.Dir.cwd().openFile(runtime.io, file_path, .{}) catch |err| {
         ctx.logWarning(file_path, options.open_error_message, err);
         return;
     };
-    defer file.close();
+    defer file.close(runtime.io);
 
-    const stat = file.stat() catch |err| {
+    const stat = file.stat(runtime.io) catch |err| {
         ctx.logWarning(file_path, options.stat_error_message, err);
         return;
     };
@@ -346,11 +346,11 @@ pub fn streamJsonLines(
     handler_context: anytype,
     comptime handler: fn (@TypeOf(handler_context), []const u8, usize) anyerror!void,
 ) !void {
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+    const file = std.Io.Dir.cwd().openFile(runtime.io, file_path, .{}) catch |err| {
         ctx.logWarning(file_path, options.open_error_message, err);
         return;
     };
-    defer file.close();
+    defer file.close(runtime.io);
 
     const io = runtime.io;
 
@@ -1156,14 +1156,18 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             };
             defer shared_allocator.free(sessions_dir);
 
-            var root_dir = std.fs.openDirAbsolute(sessions_dir, .{ .iterate = true }) catch |err| {
+            var threaded = std.Io.Threaded.init(shared_allocator, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
+
+            var root_dir = std.Io.Dir.openDirAbsolute(io, sessions_dir, .{ .iterate = true }) catch |err| {
                 std.log.info(
                     "{s}.collectEvents: skipping, unable to open sessions dir '{s}' ({s})",
                     .{ provider_name, sessions_dir, @errorName(err) },
                 );
                 return;
             };
-            defer root_dir.close();
+            defer root_dir.close(io);
 
             var walker = try root_dir.walk(shared_allocator);
             defer walker.deinit();
@@ -1174,7 +1178,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 relative_paths.deinit(shared_allocator);
             }
 
-            while (try walker.next()) |entry| {
+            while (try walker.next(io)) |entry| {
                 if (entry.kind != .file) continue;
                 const relative_path = std.mem.sliceTo(entry.path, 0);
                 if (!std.mem.endsWith(u8, relative_path, json_ext)) continue;
@@ -1216,10 +1220,6 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             };
 
             const timezone_offset = @as(i32, filters.timezone_offset_minutes);
-
-            var threaded = std.Io.Threaded.init(shared_allocator);
-            defer threaded.deinit();
-            const io = threaded.io();
 
             var group = std.Io.Group.init;
 

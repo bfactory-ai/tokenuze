@@ -141,8 +141,12 @@ fn parseOptionsIterator(args: anytype) CliError!CliOptions {
 }
 
 pub fn printHelp() !void {
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const io = io_single.io();
+
     var buffer: [1024]u8 = undefined;
-    var stdout = std.fs.File.stdout().writer(&buffer);
+    var stdout = std.Io.File.stdout().writer(io, buffer[0..]);
     const writer = &stdout.interface;
     try writer.print(
         \\Tokenuze aggregates model usage logs into daily summaries.
@@ -178,8 +182,12 @@ pub fn printHelp() !void {
 }
 
 pub fn printVersion(version: []const u8) !void {
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const io = io_single.io();
+
     var buffer: [256]u8 = undefined;
-    var stdout = std.fs.File.stdout().writer(&buffer);
+    var stdout = std.Io.File.stdout().writer(io, buffer[0..]);
     const writer = &stdout.interface;
     try writer.print("{s}\n", .{version});
     writer.flush() catch |err| switch (err) {
@@ -195,8 +203,12 @@ pub fn printAgentList(allocator: std.mem.Allocator) !void {
         infos.deinit(allocator);
     }
 
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const io = io_single.io();
+
     var buffer: [1024]u8 = undefined;
-    var stdout = std.fs.File.stdout().writer(&buffer);
+    var stdout = std.Io.File.stdout().writer(io, buffer[0..]);
     const writer = &stdout.interface;
     try writer.print("Supported agents:\n", .{});
     for (infos.items) |info| {

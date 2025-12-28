@@ -80,6 +80,9 @@ pub fn build(b: *std.Build) void {
     const cli_test_cmd = b.addRunArtifact(cli_tests);
     test_step.dependOn(&test_cmd.step);
     test_step.dependOn(&cli_test_cmd.step);
+
+    const python_step = b.step("python-bindings", "Build Python bindings");
+    python_step.dependOn(b.getInstallStep());
 }
 
 fn resolveVersion(b: *std.Build) std.SemanticVersion {

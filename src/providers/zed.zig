@@ -59,15 +59,15 @@ pub fn streamEvents(
     };
     defer shared_allocator.free(db_path);
 
-    const json_rows = runSqliteQuery(temp_allocator, db_path) catch |err| {
+    var io_single: std.Io.Threaded = .init_single_threaded;
+    defer io_single.deinit();
+    const io = io_single.io();
+
+    const json_rows = runSqliteQuery(temp_allocator, io, db_path) catch |err| {
         std.log.info("zed: skipping, sqlite3 query failed ({s})", .{@errorName(err)});
         return;
     };
     defer temp_allocator.free(json_rows);
-
-    var io_single: std.Io.Threaded = .init_single_threaded;
-    defer io_single.deinit();
-    const io = io_single.io();
 
     parseRows(io, shared_allocator, temp_allocator, filters, consumer, json_rows) catch |err| {
         std.log.warn("zed: failed to parse sqlite output ({s})", .{@errorName(err)});
@@ -111,12 +111,11 @@ fn resolveDbPath(allocator: std.mem.Allocator) ![]u8 {
     }
 }
 
-fn runSqliteQuery(allocator: std.mem.Allocator, db_path: []const u8) ![]u8 {
+fn runSqliteQuery(allocator: std.mem.Allocator, io: std.Io, db_path: []const u8) ![]u8 {
     const query = "select id, updated_at, data_type, hex(data) as data_hex from threads";
     var argv = [_][]const u8{ "sqlite3", "-json", db_path, query };
 
-    var result = std.process.Child.run(.{
-        .allocator = allocator,
+    var result = std.process.Child.run(allocator, io, .{
         .argv = &argv,
         .max_output_bytes = 64 * 1024 * 1024,
     }) catch |err| {

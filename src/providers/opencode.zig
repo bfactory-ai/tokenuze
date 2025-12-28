@@ -228,11 +228,11 @@ fn parseSessionFile(
     };
     defer allocator.free(message_dir);
 
-    var dir = std.fs.openDirAbsolute(message_dir, .{ .iterate = true }) catch |err| {
+    var dir = std.Io.Dir.openDirAbsolute(io, message_dir, .{ .iterate = true }) catch |err| {
         ctx.logWarning(message_dir, "unable to open opencode message dir", err);
         return;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     var files = std.ArrayList([]u8).empty;
     defer {
@@ -241,7 +241,7 @@ fn parseSessionFile(
     }
 
     var iterator = dir.iterate();
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
         const absolute = std.fs.path.join(allocator, &.{ message_dir, entry.name }) catch |err| {
@@ -346,8 +346,8 @@ fn parseMessageFile(
     timezone_offset_minutes: i32,
     sink: provider.EventSink,
 ) !void {
-    const file = try std.fs.openFileAbsolute(file_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.openFileAbsolute(io, file_path, .{});
+    defer file.close(io);
 
     var reader_buffer: [4 * 1024]u8 = undefined;
     var file_reader = file.readerStreaming(io, reader_buffer[0..]);
@@ -410,7 +410,7 @@ fn parseMessageFileTestWrapper(
     };
     const runtime = provider.ParseRuntime{ .io = io };
 
-    const absolute_path = try std.fs.cwd().realpathAlloc(allocator, session_path);
+    const absolute_path = try std.Io.Dir.cwd().realPathFileAlloc(io, session_path, allocator);
     defer allocator.free(absolute_path);
     try parseSessionFile(
         allocator,
@@ -473,14 +473,18 @@ test "opencode message parser handles large documents" {
     const large_payload = try worker_allocator.alloc(u8, large_len);
     @memset(large_payload, 'a');
 
-    var msg_file = try tmp.dir.createFile("msg_large.json", .{});
-    defer msg_file.close();
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const io = io_single.io();
 
-    try msg_file.writeAll("{\"role\":\"assistant\",\"time\":{\"completed\":1700000000000},\"tokens\":{\"input\":1,\"output\":2},\"modelID\":\"big-model\",\"content\":\"");
-    try msg_file.writeAll(large_payload);
-    try msg_file.writeAll("\"}");
+    var msg_file = try tmp.dir.createFile(io, "msg_large.json", .{});
+    defer msg_file.close(io);
 
-    const msg_path = try tmp.dir.realpathAlloc(worker_allocator, "msg_large.json");
+    try msg_file.writeStreamingAll(io, "{\"role\":\"assistant\",\"time\":{\"completed\":1700000000000},\"tokens\":{\"input\":1,\"output\":2},\"modelID\":\"big-model\",\"content\":\"");
+    try msg_file.writeStreamingAll(io, large_payload);
+    try msg_file.writeStreamingAll(io, "\"}");
+
+    const msg_path = try tmp.dir.realPathFileAlloc(io, "msg_large.json", worker_allocator);
     defer worker_allocator.free(msg_path);
 
     var events: std.ArrayList(model.TokenUsageEvent) = .empty;
@@ -493,10 +497,6 @@ test "opencode message parser handles large documents" {
         .legacy_fallback_model = null,
         .cached_counts_overlap_input = false,
     };
-
-    var io_single = std.Io.Threaded.init_single_threaded;
-    defer io_single.deinit();
-    const io = io_single.io();
 
     try parseMessageFile(worker_allocator, &ctx, io, "fixture-session", msg_path, 0, sink);
 

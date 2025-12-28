@@ -99,8 +99,12 @@ pub fn main() !void {
 
 fn printMachineId(allocator: std.mem.Allocator) !void {
     const id = try tokenuze.machine_id.getMachineId(allocator);
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const io = io_single.io();
+
     var buffer: [256]u8 = undefined;
-    var stdout = std.fs.File.stdout().writer(&buffer);
+    var stdout = std.Io.File.stdout().writer(io, buffer[0..]);
     const writer = &stdout.interface;
     try writer.print("{s}\n", .{id[0..]});
     writer.flush() catch |err| switch (err) {
@@ -110,8 +114,12 @@ fn printMachineId(allocator: std.mem.Allocator) !void {
 }
 
 fn handleSessionsOutput(allocator: std.mem.Allocator, options: cli.CliOptions) !void {
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const io = io_single.io();
+
     var buffer: [4096]u8 = undefined;
-    var stdout = std.fs.File.stdout().writer(&buffer);
+    var stdout = std.Io.File.stdout().writer(io, buffer[0..]);
     const writer = &stdout.interface;
 
     var cache = tokenuze.PricingCache.init(allocator);
