@@ -98,7 +98,13 @@ fn cacheDir(allocator: std.mem.Allocator) ![]u8 {
         defer allocator.free(home);
         return std.fs.path.join(allocator, &.{ home, ".ccusage" });
     } else |_| {
-        return std.fs.getAppDataDir(allocator, "ccusage");
+        if (builtin.os.tag == .windows) {
+            if (std.process.getEnvVarOwned(allocator, "LOCALAPPDATA")) |app_data| {
+                defer allocator.free(app_data);
+                return std.fs.path.join(allocator, &.{ app_data, "ccusage" });
+            } else |_| {}
+        }
+        return error.HomeNotFound;
     }
 }
 
