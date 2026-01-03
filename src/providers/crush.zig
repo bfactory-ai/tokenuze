@@ -85,7 +85,7 @@ pub fn streamEvents(
     for (0..worker_count) |_| {
         group.async(io, workerMain, .{&work_state});
     }
-    group.wait(io);
+    group.awaitUncancelable(io);
 }
 
 pub fn loadPricingData(shared_allocator: std.mem.Allocator, pricing: *model.PricingMap) !void {
