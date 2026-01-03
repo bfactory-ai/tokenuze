@@ -47,11 +47,11 @@ pub fn parseFilterDate(input: []const u8) ParseDateError![10]u8 {
     if (day == 0 or day > 31) return error.InvalidDate;
 
     var buffer: [10]u8 = undefined;
-    std.mem.copyForwards(u8, buffer[0..4], input[0..4]);
+    @memcpy(buffer[0..4], input[0..4]);
     buffer[4] = '-';
-    std.mem.copyForwards(u8, buffer[5..7], input[4..6]);
+    @memcpy(buffer[5..7], input[4..6]);
     buffer[7] = '-';
-    std.mem.copyForwards(u8, buffer[8..10], input[6..8]);
+    @memcpy(buffer[8..10], input[6..8]);
 
     return buffer;
 }

@@ -1,4 +1,6 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
 const builtin = @import("builtin");
 
 const identity = @import("identity.zig");
@@ -10,8 +12,8 @@ pub const MachineIdSource = enum {
     hostname_user,
 };
 
-pub fn getMachineId(allocator: std.mem.Allocator) ![16]u8 {
-    var io_single = std.Io.Threaded.init_single_threaded;
+pub fn getMachineId(allocator: Allocator) ![16]u8 {
+    var io_single: Io.Threaded = .init_single_threaded;
     defer io_single.deinit();
     const io = io_single.io();
 
@@ -24,7 +26,7 @@ pub fn getMachineId(allocator: std.mem.Allocator) ![16]u8 {
     return generated;
 }
 
-fn generateMachineId(allocator: std.mem.Allocator, io: std.Io) ![16]u8 {
+fn generateMachineId(allocator: Allocator, io: Io) ![16]u8 {
     var unique = try selectUniqueIdentifier(allocator, io);
     defer allocator.free(unique.value);
 
@@ -36,7 +38,7 @@ const SelectedIdentifier = struct {
     source: MachineIdSource,
 };
 
-fn selectUniqueIdentifier(allocator: std.mem.Allocator, io: std.Io) !SelectedIdentifier {
+fn selectUniqueIdentifier(allocator: Allocator, io: Io) !SelectedIdentifier {
     if (try getHardwareUuid(allocator, io)) |uuid| {
         return .{ .value = uuid, .source = .hardware_uuid };
     }
@@ -53,11 +55,11 @@ fn selectUniqueIdentifier(allocator: std.mem.Allocator, io: std.Io) !SelectedIde
     return .{ .value = fallback, .source = .hostname_user };
 }
 
-fn readCachedMachineId(allocator: std.mem.Allocator, io: std.Io) !?[16]u8 {
+fn readCachedMachineId(allocator: Allocator, io: Io) !?[16]u8 {
     const cache_path = try cacheFilePath(allocator);
     defer allocator.free(cache_path);
 
-    const file = std.Io.Dir.openFileAbsolute(io, cache_path, .{}) catch |err| switch (err) {
+    const file = Io.Dir.openFileAbsolute(io, cache_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         error.NotDir => return null,
         else => return err,
@@ -70,15 +72,15 @@ fn readCachedMachineId(allocator: std.mem.Allocator, io: std.Io) !?[16]u8 {
     if (trimmed.len != 16) return null;
 
     var id: [16]u8 = undefined;
-    std.mem.copyForwards(u8, id[0..], trimmed[0..16]);
+    @memcpy(id[0..16], trimmed[0..16]);
     return id;
 }
 
-fn persistMachineId(allocator: std.mem.Allocator, io: std.Io, id: [16]u8) !void {
+fn persistMachineId(allocator: Allocator, io: Io, id: [16]u8) !void {
     const cache_dir = try cacheDir(allocator);
     defer allocator.free(cache_dir);
 
-    std.Io.Dir.createDirAbsolute(io, cache_dir, .default_dir) catch |err| switch (err) {
+    Io.Dir.createDirAbsolute(io, cache_dir, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
@@ -86,14 +88,14 @@ fn persistMachineId(allocator: std.mem.Allocator, io: std.Io, id: [16]u8) !void 
     const cache_path = try std.fs.path.join(allocator, &.{ cache_dir, "machine_id" });
     defer allocator.free(cache_path);
 
-    var file = try std.Io.Dir.createFileAbsolute(io, cache_path, .{ .truncate = true });
+    var file = try Io.Dir.createFileAbsolute(io, cache_path, .{ .truncate = true });
     defer file.close(io);
 
     try file.writeStreamingAll(io, id[0..]);
     try file.writeStreamingAll(io, "\n");
 }
 
-fn cacheDir(allocator: std.mem.Allocator) ![]u8 {
+fn cacheDir(allocator: Allocator) ![]u8 {
     if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
         defer allocator.free(home);
         return std.fs.path.join(allocator, &.{ home, ".ccusage" });
@@ -108,13 +110,13 @@ fn cacheDir(allocator: std.mem.Allocator) ![]u8 {
     }
 }
 
-fn cacheFilePath(allocator: std.mem.Allocator) ![]u8 {
+fn cacheFilePath(allocator: Allocator) ![]u8 {
     const dir = try cacheDir(allocator);
     defer allocator.free(dir);
     return std.fs.path.join(allocator, &.{ dir, "machine_id" });
 }
 
-fn getHardwareUuid(allocator: std.mem.Allocator, io: std.Io) !?[]u8 {
+fn getHardwareUuid(allocator: Allocator, io: Io) !?[]u8 {
     if (builtin.os.tag != .macos) return null;
 
     const result = std.process.Child.run(allocator, io, .{
@@ -145,7 +147,7 @@ fn getHardwareUuid(allocator: std.mem.Allocator, io: std.Io) !?[]u8 {
     return null;
 }
 
-fn getLinuxMachineId(allocator: std.mem.Allocator, io: std.Io) !?[]u8 {
+fn getLinuxMachineId(allocator: Allocator, io: Io) !?[]u8 {
     if (builtin.os.tag != .linux) return null;
 
     if (try readTrimmedFile(allocator, io, "/etc/machine-id")) |content| {
@@ -155,8 +157,8 @@ fn getLinuxMachineId(allocator: std.mem.Allocator, io: std.Io) !?[]u8 {
     return try readTrimmedFile(allocator, io, "/var/lib/dbus/machine-id");
 }
 
-fn readTrimmedFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !?[]u8 {
-    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch |err| switch (err) {
+fn readTrimmedFile(allocator: Allocator, io: Io, path: []const u8) !?[]u8 {
+    const file = Io.Dir.openFileAbsolute(io, path, .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         error.NotDir => return null,
         else => return err,
@@ -170,7 +172,7 @@ fn readTrimmedFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !
     return try allocator.dupe(u8, trimmed);
 }
 
-fn readIntoBuffer(file: std.Io.File, io: std.Io, buffer: []u8) ![]u8 {
+fn readIntoBuffer(file: Io.File, io: Io, buffer: []u8) ![]u8 {
     var filled: usize = 0;
     while (filled < buffer.len) {
         const amount = try file.readStreaming(io, &.{buffer[filled..]});
@@ -180,7 +182,7 @@ fn readIntoBuffer(file: std.Io.File, io: std.Io, buffer: []u8) ![]u8 {
     return buffer[0..filled];
 }
 
-fn getMacAddress(allocator: std.mem.Allocator, io: std.Io) !?[]u8 {
+fn getMacAddress(allocator: Allocator, io: Io) !?[]u8 {
     return switch (builtin.os.tag) {
         .macos => try parseMacFromCommand(allocator, io, &.{ "/sbin/ifconfig", "en0" }, "ether "),
         .linux => try parseMacFromCommand(allocator, io, &.{ "ip", "link", "show" }, "link/ether "),
@@ -189,8 +191,8 @@ fn getMacAddress(allocator: std.mem.Allocator, io: std.Io) !?[]u8 {
 }
 
 fn parseMacFromCommand(
-    allocator: std.mem.Allocator,
-    io: std.Io,
+    allocator: Allocator,
+    io: Io,
     argv: []const []const u8,
     needle: []const u8,
 ) !?[]u8 {
@@ -230,7 +232,7 @@ fn lowercaseInPlace(bytes: []u8) void {
     }
 }
 
-fn getHostnameUserFallback(allocator: std.mem.Allocator) ![]u8 {
+fn getHostnameUserFallback(allocator: Allocator) ![]u8 {
     const hostname = try identity.getHostname(allocator);
     defer allocator.free(hostname);
 
@@ -240,7 +242,7 @@ fn getHostnameUserFallback(allocator: std.mem.Allocator) ![]u8 {
     return std.fmt.allocPrint(allocator, "{s}:{s}", .{ hostname, username });
 }
 
-fn hashIdentifier(allocator: std.mem.Allocator, unique: []const u8, source: MachineIdSource) ![16]u8 {
+fn hashIdentifier(allocator: Allocator, unique: []const u8, source: MachineIdSource) ![16]u8 {
     const label = sourceLabel(source);
     const payload = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ unique, label });
     defer allocator.free(payload);
@@ -250,7 +252,7 @@ fn hashIdentifier(allocator: std.mem.Allocator, unique: []const u8, source: Mach
 
     const hex = std.fmt.bytesToHex(digest, .lower);
     var id: [16]u8 = undefined;
-    std.mem.copyForwards(u8, id[0..], hex[0..16]);
+    @memcpy(id[0..16], hex[0..16]);
     return id;
 }
 

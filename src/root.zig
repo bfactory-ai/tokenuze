@@ -388,7 +388,7 @@ fn describeSelectedProviders(selection: ProviderSelection, buffer: []u8) Provide
         const placeholder = "(truncated)";
         if (buffer.len == 0) return .{ .names = "", .count = count };
         const copy_len = @min(placeholder.len, buffer.len);
-        std.mem.copyForwards(u8, buffer[0..copy_len], placeholder[0..copy_len]);
+        @memcpy(buffer[0..copy_len], placeholder[0..copy_len]);
         return .{ .names = buffer[0..copy_len], .count = count };
     };
 
