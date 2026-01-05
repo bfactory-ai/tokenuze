@@ -1317,7 +1317,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 group.async(io, TaskFn.run, .{&worker_args});
             }
 
-            group.awaitUncancelable(io);
+            try group.await(io);
 
             const final_completed = completed.load(.acquire);
 
