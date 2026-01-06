@@ -66,7 +66,7 @@ pub fn main(init: std.process.Init) !void {
             if (!options.providers.includesIndex(idx)) continue;
             var single = tokenuze.ProviderSelection.initEmpty();
             single.includeIndex(idx);
-            var report = try tokenuze.collectUploadReportWithCache(allocator, ctx.io, ctx.environ_map, options.filters, single, &pricing_cache);
+            var report = try tokenuze.collectUploadReportWithCache(ctx, options.filters, single, &pricing_cache);
             const entry = tokenuze.uploader.ProviderUpload{
                 .name = provider.name,
                 .daily_summary = report.daily_json,

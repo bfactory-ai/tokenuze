@@ -336,27 +336,18 @@ pub fn collectSessionsWithCacheWithContext(
     return recorder;
 }
 
-pub fn collectUploadReport(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    environ_map: *const std.process.Environ.Map,
-    filters: DateFilters,
-    selection: ProviderSelection,
-) !UploadReport {
-    var cache = PricingCache.init(allocator);
-    defer cache.deinit(allocator);
-    return try collectUploadReportWithCache(allocator, io, environ_map, filters, selection, &cache);
+pub fn collectUploadReport(ctx: Context, filters: DateFilters, selection: ProviderSelection) !UploadReport {
+    var cache = PricingCache.init(ctx.allocator);
+    defer cache.deinit(ctx.allocator);
+    return try collectUploadReportWithCache(ctx, filters, selection, &cache);
 }
 
 pub fn collectUploadReportWithCache(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    environ_map: *const std.process.Environ.Map,
+    ctx: Context,
     filters: DateFilters,
     selection: ProviderSelection,
     cache: *PricingCache,
 ) !UploadReport {
-    const ctx = defaultContext(io, environ_map, allocator);
     var recorder = model.SessionRecorder.init(ctx.allocator);
     defer recorder.deinit(ctx.allocator);
 
