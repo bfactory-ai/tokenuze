@@ -1,5 +1,8 @@
 const std = @import("std");
 
+const ctxmod = @import("../context.zig");
+const Context = ctxmod.Context;
+
 const http_client = @import("../http_client.zig");
 const io_util = @import("../io_util.zig");
 const model = @import("../model.zig");
@@ -1061,10 +1064,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
         }
 
         pub fn collect(
-            shared_allocator: std.mem.Allocator,
-            temp_allocator: std.mem.Allocator,
-            io: std.Io,
-            environ_map: *const std.process.Environ.Map,
+            ctx: Context,
             summaries: *model.SummaryBuilder,
             filters: model.DateFilters,
             progress: ?std.Progress.Node,
@@ -1086,7 +1086,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
                 .mutex = &builder_mutex,
                 .ingest = summaryIngest,
             };
-            try collectEvents(shared_allocator, temp_allocator, io, environ_map, filters, consumer, events_progress);
+            try collectEvents(ctx, filters, consumer, events_progress);
             const after_events = summaries.eventCount();
             if (events_progress) |node| std.Progress.Node.end(node);
             std.log.debug(
@@ -1101,14 +1101,11 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
         }
 
         pub fn streamEvents(
-            shared_allocator: std.mem.Allocator,
-            temp_allocator: std.mem.Allocator,
-            io: std.Io,
-            environ_map: *const std.process.Environ.Map,
+            ctx: Context,
             filters: model.DateFilters,
             consumer: EventConsumer,
         ) !void {
-            try collectEvents(shared_allocator, temp_allocator, io, environ_map, filters, consumer, null);
+            try collectEvents(ctx, filters, consumer, null);
         }
 
         pub fn loadPricingData(
@@ -1122,11 +1119,8 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             }
         }
 
-        pub fn sessionsPath(
-            allocator: std.mem.Allocator,
-            environ_map: *const std.process.Environ.Map,
-        ) ![]u8 {
-            return resolveSessionsDir(allocator, environ_map);
+        pub fn sessionsPath(ctx: Context) ![]u8 {
+            return resolveSessionsDir(ctx);
         }
 
         fn logSessionWarning(file_path: []const u8, message: []const u8, err: anyerror) void {
@@ -1136,15 +1130,10 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             );
         }
 
-        fn collectEvents(
-            shared_allocator: std.mem.Allocator,
-            temp_allocator: std.mem.Allocator,
-            io: std.Io,
-            environ_map: *const std.process.Environ.Map,
-            filters: model.DateFilters,
-            consumer: EventConsumer,
-            progress: ?std.Progress.Node,
-        ) !void {
+        fn collectEvents(ctx: Context, filters: model.DateFilters, consumer: EventConsumer, progress: ?std.Progress.Node) !void {
+            const shared_allocator = ctx.allocator;
+            const temp_allocator = ctx.temp_allocator;
+            const io = ctx.io;
             const SharedContext = struct {
                 shared_allocator: std.mem.Allocator,
                 temp_allocator: std.mem.Allocator,
@@ -1159,7 +1148,7 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
 
             var timer = try std.time.Timer.start();
 
-            const sessions_dir = resolveSessionsDir(shared_allocator, environ_map) catch |err| {
+            const sessions_dir = resolveSessionsDir(ctx) catch |err| {
                 std.log.info("{s}.collectEvents: skipping, unable to resolve sessions dir ({s})", .{ provider_name, @errorName(err) });
                 return;
             };
@@ -1332,12 +1321,9 @@ pub fn Provider(comptime cfg: ProviderConfig) type {
             );
         }
 
-        fn resolveSessionsDir(
-            allocator: std.mem.Allocator,
-            environ_map: *const std.process.Environ.Map,
-        ) ![]u8 {
-            const home = environ_map.get("HOME") orelse return error.HomeNotFound;
-            return std.fmt.allocPrint(allocator, "{s}{s}", .{ home, sessions_dir_suffix });
+        fn resolveSessionsDir(ctx: Context) ![]u8 {
+            const home = ctx.environ_map.get("HOME") orelse return error.HomeNotFound;
+            return std.fmt.allocPrint(ctx.allocator, "{s}{s}", .{ home, sessions_dir_suffix });
         }
 
         fn parseSessionFile(

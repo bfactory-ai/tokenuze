@@ -1,6 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const ctxmod = @import("context.zig");
+pub const Context = ctxmod.Context;
+
 const io_util = @import("io_util.zig");
 pub const machine_id = @import("machine_id.zig");
 const model = @import("model.zig");
@@ -52,22 +55,14 @@ pub fn logFn(
     std.log.defaultLog(level, scope, format, args);
 }
 
-const CollectFn = *const fn (
-    std.mem.Allocator,
-    std.mem.Allocator,
-    std.Io,
-    *const std.process.Environ.Map,
-    *model.SummaryBuilder,
-    model.DateFilters,
-    ?std.Progress.Node,
-) anyerror!void;
+const CollectFn = *const fn (Context, *model.SummaryBuilder, model.DateFilters, ?std.Progress.Node) anyerror!void;
 
 const LoadPricingFn = *const fn (
     std.mem.Allocator,
     *model.PricingMap,
 ) anyerror!void;
 
-const PathHintFn = *const fn (std.mem.Allocator, *const std.process.Environ.Map) anyerror![]u8;
+const PathHintFn = *const fn (Context) anyerror![]u8;
 
 pub const ProviderSpec = struct {
     name: []const u8,
@@ -223,6 +218,15 @@ pub fn findProviderIndex(name: []const u8) ?usize {
     return null;
 }
 
+fn defaultContext(io: std.Io, environ_map: *const std.process.Environ.Map, allocator: std.mem.Allocator) Context {
+    return .{
+        .allocator = allocator,
+        .temp_allocator = std.heap.page_allocator,
+        .io = io,
+        .environ_map = environ_map,
+    };
+}
+
 pub fn run(
     io: std.Io,
     environ_map: *const std.process.Environ.Map,
@@ -230,16 +234,20 @@ pub fn run(
     filters: DateFilters,
     selection: ProviderSelection,
 ) !void {
-    const enable_progress = std.Io.File.stdout().isTty(io) catch false;
+    return runWithContext(defaultContext(io, environ_map, allocator), filters, selection);
+}
+
+pub fn runWithContext(ctx: Context, filters: DateFilters, selection: ProviderSelection) !void {
+    const enable_progress = std.Io.File.stdout().isTty(ctx.io) catch false;
     logRunStart(filters, selection, enable_progress);
-    var summary = try collectSummary(io, environ_map, allocator, filters, selection, enable_progress);
-    defer summary.deinit(allocator);
+    var summary = try collectSummary(ctx, filters, selection, enable_progress);
+    defer summary.deinit(ctx.allocator);
 
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(io, stdout_buffer[0..]);
+    var stdout_writer = std.Io.File.stdout().writer(ctx.io, stdout_buffer[0..]);
     const out_writer = &stdout_writer.interface;
     switch (filters.output_format) {
-        .table => try render.Renderer.writeTable(out_writer, allocator, summary.builder.items(), &summary.totals),
+        .table => try render.Renderer.writeTable(out_writer, ctx.allocator, summary.builder.items(), &summary.totals),
         .json => try render.Renderer.writeJson(out_writer, summary.builder.items(), &summary.totals, filters.pretty_output),
     }
     try flushOutput(out_writer);
@@ -253,9 +261,9 @@ pub fn renderSummaryAlloc(
 ) ![]u8 {
     var io_single = std.Io.Threaded.init_single_threaded;
     defer io_single.deinit();
-    const io = io_single.io();
+    const ctx = defaultContext(io_single.io(), environ_map, allocator);
 
-    var summary = try collectSummaryInternal(io, environ_map, allocator, filters, selection, false, null, null);
+    var summary = try collectSummaryInternal(ctx, filters, selection, false, null, null);
     defer summary.deinit(allocator);
     return try renderSummaryBuffer(allocator, summary.builder.items(), &summary.totals, filters.pretty_output);
 }
@@ -291,7 +299,8 @@ pub fn renderSessionsWithCache(
     pretty: bool,
     cache: *PricingCache,
 ) ![]u8 {
-    var recorder = try collectSessionsWithCache(io, environ_map, allocator, filters, selection, cache);
+    const ctx = defaultContext(io, environ_map, allocator);
+    var recorder = try collectSessionsWithCacheWithContext(ctx, filters, selection, cache);
     defer recorder.deinit(allocator);
     return recorder.renderJson(allocator, pretty);
 }
@@ -304,17 +313,26 @@ pub fn collectSessionsWithCache(
     selection: ProviderSelection,
     cache: *PricingCache,
 ) !model.SessionRecorder {
-    var recorder = model.SessionRecorder.init(allocator);
-    errdefer recorder.deinit(allocator);
+    return collectSessionsWithCacheWithContext(defaultContext(io, environ_map, allocator), filters, selection, cache);
+}
 
-    var summary = try collectSummaryInternal(io, environ_map, allocator, filters, selection, false, &recorder, cache);
+pub fn collectSessionsWithCacheWithContext(
+    ctx: Context,
+    filters: DateFilters,
+    selection: ProviderSelection,
+    cache: *PricingCache,
+) !model.SessionRecorder {
+    var recorder = model.SessionRecorder.init(ctx.allocator);
+    errdefer recorder.deinit(ctx.allocator);
+
+    var summary = try collectSummaryInternal(ctx, filters, selection, false, &recorder, cache);
     // Mirror the aggregated totals from the daily summary to keep --sessions output
     // in lockstep with the default summary, even if per-session pricing or
     // grouping would introduce tiny floating-point differences.
     recorder.totals = summary.totals.usage;
     recorder.display_total_input_tokens = summary.totals.display_input_tokens;
     recorder.total_cost_usd = summary.totals.cost_usd;
-    defer summary.deinit(allocator);
+    defer summary.deinit(ctx.allocator);
 
     return recorder;
 }
@@ -339,17 +357,18 @@ pub fn collectUploadReportWithCache(
     selection: ProviderSelection,
     cache: *PricingCache,
 ) !UploadReport {
-    var recorder = model.SessionRecorder.init(allocator);
-    defer recorder.deinit(allocator);
+    const ctx = defaultContext(io, environ_map, allocator);
+    var recorder = model.SessionRecorder.init(ctx.allocator);
+    defer recorder.deinit(ctx.allocator);
 
-    var summary = try collectSummaryInternal(io, environ_map, allocator, filters, selection, false, &recorder, cache);
-    defer summary.deinit(allocator);
+    var summary = try collectSummaryInternal(ctx, filters, selection, false, &recorder, cache);
+    defer summary.deinit(ctx.allocator);
 
-    const daily_json = try renderSummaryBuffer(allocator, summary.builder.items(), &summary.totals, filters.pretty_output);
-    errdefer allocator.free(daily_json);
+    const daily_json = try renderSummaryBuffer(ctx.allocator, summary.builder.items(), &summary.totals, filters.pretty_output);
+    errdefer ctx.allocator.free(daily_json);
 
-    const sessions_json = try recorder.renderJson(allocator, filters.pretty_output);
-    errdefer allocator.free(sessions_json);
+    const sessions_json = try recorder.renderJson(ctx.allocator, filters.pretty_output);
+    errdefer ctx.allocator.free(sessions_json);
 
     return UploadReport{
         .daily_json = daily_json,
@@ -423,6 +442,10 @@ pub fn providerPathInfos(
     allocator: std.mem.Allocator,
     environ_map: *const std.process.Environ.Map,
 ) !std.ArrayList(ProviderPathInfo) {
+    var io_single = std.Io.Threaded.init_single_threaded;
+    defer io_single.deinit();
+    const ctx = defaultContext(io_single.io(), environ_map, allocator);
+
     var list: std.ArrayList(ProviderPathInfo) = .empty;
     errdefer {
         for (list.items) |info| allocator.free(info.path);
@@ -430,7 +453,7 @@ pub fn providerPathInfos(
     }
 
     for (providers) |spec| {
-        const resolved = spec.path_hint(allocator, environ_map) catch |err| blk: {
+        const resolved = spec.path_hint(ctx) catch |err| blk: {
             const note = try std.fmt.allocPrint(allocator, "unavailable: {s}", .{@errorName(err)});
             break :blk note;
         };
@@ -471,38 +494,32 @@ fn flushOutput(writer: anytype) !void {
 }
 
 fn collectSummary(
-    io: std.Io,
-    environ_map: *const std.process.Environ.Map,
-    allocator: std.mem.Allocator,
+    ctx: Context,
     filters: DateFilters,
     selection: ProviderSelection,
     enable_progress: bool,
 ) !SummaryResult {
-    return collectSummaryInternal(io, environ_map, allocator, filters, selection, enable_progress, null, null);
+    return collectSummaryInternal(ctx, filters, selection, enable_progress, null, null);
 }
 
 fn collectSummaryInternal(
-    io: std.Io,
-    environ_map: *const std.process.Environ.Map,
-    allocator: std.mem.Allocator,
+    ctx: Context,
     filters: DateFilters,
     selection: ProviderSelection,
     enable_progress: bool,
     session_recorder: ?*model.SessionRecorder,
     pricing_cache: ?*PricingCache,
 ) !SummaryResult {
-    var summary_builder = model.SummaryBuilder.init(allocator);
-    errdefer summary_builder.deinit(allocator);
+    var summary_builder = model.SummaryBuilder.init(ctx.allocator);
+    errdefer summary_builder.deinit(ctx.allocator);
     if (session_recorder) |recorder| summary_builder.attachSessionRecorder(recorder);
 
     var totals = SummaryTotals.init();
-    errdefer totals.deinit(allocator);
-
-    const temp_allocator = std.heap.page_allocator;
+    errdefer totals.deinit(ctx.allocator);
 
     var progress_root: std.Progress.Node = undefined;
     const progress_parent = if (enable_progress) blk: {
-        progress_root = std.Progress.start(io, .{ .root_name = "Tokenuze" });
+        progress_root = std.Progress.start(ctx.io, .{ .root_name = "Tokenuze" });
         break :blk &progress_root;
     } else null;
     defer if (enable_progress) std.Progress.Node.end(progress_root);
@@ -513,31 +530,22 @@ fn collectSummaryInternal(
     var total_timer = try std.time.Timer.start();
 
     var temp_pricing_map: ?model.PricingMap = null;
-    defer if (temp_pricing_map) |*map| model.deinitPricingMap(map, allocator);
+    defer if (temp_pricing_map) |*map| model.deinitPricingMap(map, ctx.allocator);
 
     const pricing_map: *model.PricingMap = blk: {
         if (pricing_cache) |cache| {
-            try cache.ensureLoaded(allocator, temp_allocator, selection, progress_parent);
+            try cache.ensureLoaded(ctx.allocator, ctx.temp_allocator, selection, progress_parent);
             break :blk &cache.map;
         }
 
-        temp_pricing_map = .init(allocator);
+        temp_pricing_map = .init(ctx.allocator);
         if (!selection.isEmpty()) {
-            try loadPricing(allocator, temp_allocator, selection, &temp_pricing_map.?, progress_parent);
+            try loadPricing(ctx.allocator, ctx.temp_allocator, selection, &temp_pricing_map.?, progress_parent);
         }
         break :blk &temp_pricing_map.?;
     };
 
-    try collectSelectedProviders(
-        allocator,
-        temp_allocator,
-        io,
-        environ_map,
-        filters,
-        selection,
-        &summary_builder,
-        progress_parent,
-    );
+    try collectSelectedProviders(ctx, filters, selection, &summary_builder, progress_parent);
 
     var summaries = summary_builder.items();
     if (summaries.len == 0) {
@@ -546,7 +554,7 @@ fn collectSummaryInternal(
         return SummaryResult{ .builder = summary_builder, .totals = totals };
     }
 
-    try finalizeSummaries(allocator, progress_parent, summaries, pricing_map, &totals, session_recorder);
+    try finalizeSummaries(ctx.allocator, progress_parent, summaries, pricing_map, &totals, session_recorder);
 
     std.log.info("phase.total runtime {d:.2}ms", .{nsToMs(total_timer.read())});
     if (enable_progress) std.Progress.setStatus(.success);
@@ -555,10 +563,7 @@ fn collectSummaryInternal(
 }
 
 fn collectSelectedProviders(
-    allocator: std.mem.Allocator,
-    temp_allocator: std.mem.Allocator,
-    io: std.Io,
-    environ_map: *const std.process.Environ.Map,
+    ctx: Context,
     filters: DateFilters,
     selection: ProviderSelection,
     summary_builder: *model.SummaryBuilder,
@@ -577,7 +582,7 @@ fn collectSelectedProviders(
             var collect_timer = try std.time.Timer.start();
             const phase_node = startProgressNode(progress_parent, prov.phase_label, 0);
             defer finishProgressNode(phase_node);
-            try prov.collect(allocator, temp_allocator, io, environ_map, summary_builder, filters, progressHandle(phase_node));
+            try prov.collect(ctx, summary_builder, filters, progressHandle(phase_node));
             break :blk .{
                 .elapsed = nsToMs(collect_timer.read()),
                 .events_added = summary_builder.eventCount() - before_events,

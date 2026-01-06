@@ -72,13 +72,13 @@ const option_specs = [_]OptionSpec{
 
 threadlocal var provider_desc_buffer: [256]u8 = undefined;
 
-pub fn parseOptions(allocator: std.mem.Allocator) CliError!CliOptions {
-    var args = try std.process.argsWithAllocator(allocator);
-    defer args.deinit();
+pub fn parseOptions(allocator: std.mem.Allocator, args: std.process.Args) CliError!CliOptions {
+    var it = std.process.Args.Iterator.initAllocator(args, allocator) catch return error.OutOfMemory;
+    defer it.deinit();
 
-    _ = args.skip(); // program name
+    _ = it.skip(); // program name
 
-    return parseOptionsIterator(&args);
+    return parseOptionsIterator(&it);
 }
 
 fn parseOptionsIterator(args: anytype) CliError!CliOptions {
@@ -188,19 +188,15 @@ pub fn printVersion(io: std.Io, version: []const u8) !void {
     };
 }
 
-pub fn printAgentList(
-    io: std.Io,
-    allocator: std.mem.Allocator,
-    environ_map: *const std.process.Environ.Map,
-) !void {
-    var infos = try tokenuze.providerPathInfos(allocator, environ_map);
+pub fn printAgentList(ctx: tokenuze.Context) !void {
+    var infos = try tokenuze.providerPathInfos(ctx.allocator, ctx.environ_map);
     defer {
-        for (infos.items) |info| allocator.free(info.path);
-        infos.deinit(allocator);
+        for (infos.items) |info| ctx.allocator.free(info.path);
+        infos.deinit(ctx.allocator);
     }
 
     var buffer: [1024]u8 = undefined;
-    var stdout = std.Io.File.stdout().writer(io, buffer[0..]);
+    var stdout = std.Io.File.stdout().writer(ctx.io, buffer[0..]);
     const writer = &stdout.interface;
     try writer.print("Supported agents:\n", .{});
     for (infos.items) |info| {
