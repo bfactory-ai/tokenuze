@@ -1,8 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const ctxmod = @import("context.zig");
-pub const Context = ctxmod.Context;
+pub const Context = @import("Context.zig");
 
 const io_util = @import("io_util.zig");
 pub const machine_id = @import("machine_id.zig");

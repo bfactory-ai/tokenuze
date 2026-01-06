@@ -87,13 +87,7 @@ pub fn main(init: std.process.Init) !void {
             allocator.free(entry.daily_summary);
             allocator.free(entry.sessions_summary);
         };
-        try tokenuze.uploader.run(
-            allocator,
-            ctx.io,
-            ctx.environ_map,
-            uploads.items,
-            options.filters.timezone_offset_minutes,
-        );
+        try tokenuze.uploader.run(ctx, uploads.items, options.filters.timezone_offset_minutes);
         if (!options.output_explicit) {
             return;
         }
@@ -107,7 +101,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn printMachineId(ctx: tokenuze.Context) !void {
-    const id = try tokenuze.machine_id.getMachineId(ctx.allocator, ctx.io, ctx.environ_map);
+    const id = try tokenuze.machine_id.getMachineId(ctx);
     var buffer: [256]u8 = undefined;
     var stdout = std.Io.File.stdout().writer(ctx.io, buffer[0..]);
     const writer = &stdout.interface;

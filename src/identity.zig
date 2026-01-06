@@ -1,40 +1,36 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub fn getHostname(
-    allocator: std.mem.Allocator,
-    environ_map: *const std.process.Environ.Map,
-) ![]u8 {
+const Context = @import("Context.zig");
+
+pub fn getHostname(ctx: Context) ![]u8 {
     const host_vars = [_][]const u8{ "HOSTNAME", "COMPUTERNAME" };
     for (host_vars) |var_name| {
-        if (environ_map.get(var_name)) |hostname| {
-            return allocator.dupe(u8, hostname);
+        if (ctx.environ_map.get(var_name)) |hostname| {
+            return ctx.allocator.dupe(u8, hostname);
         }
     }
 
     if (builtin.target.os.tag == .windows) {
-        return allocator.dupe(u8, "unknown-host");
+        return ctx.allocator.dupe(u8, "unknown-host");
     } else {
         var buf: [hostnameBufferLen()]u8 = undefined;
         const name = std.posix.gethostname(&buf) catch {
-            return allocator.dupe(u8, "unknown-host");
+            return ctx.allocator.dupe(u8, "unknown-host");
         };
-        return allocator.dupe(u8, name);
+        return ctx.allocator.dupe(u8, name);
     }
 }
 
-pub fn getUsername(
-    allocator: std.mem.Allocator,
-    environ_map: *const std.process.Environ.Map,
-) ![]u8 {
+pub fn getUsername(ctx: Context) ![]u8 {
     const user_vars = [_][]const u8{ "USER", "USERNAME" };
     for (user_vars) |var_name| {
-        if (environ_map.get(var_name)) |username| {
-            return allocator.dupe(u8, username);
+        if (ctx.environ_map.get(var_name)) |username| {
+            return ctx.allocator.dupe(u8, username);
         }
     }
 
-    return allocator.dupe(u8, "unknown");
+    return ctx.allocator.dupe(u8, "unknown");
 }
 
 fn hostnameBufferLen() usize {

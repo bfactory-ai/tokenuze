@@ -1,9 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-const ctxmod = @import("../context.zig");
-const Context = ctxmod.Context;
-
+const Context = @import("../Context.zig");
 const model = @import("../model.zig");
 const provider = @import("provider.zig");
 const test_helpers = @import("test_helpers.zig");

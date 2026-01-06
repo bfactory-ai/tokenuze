@@ -325,7 +325,11 @@ fn missingValueError(name: []const u8) CliError {
     return cliError("missing value for --{s}", .{name});
 }
 
-fn optionDescription(spec: *const OptionSpec, tz_label: []const u8, buffer: []u8) []const u8 {
+fn optionDescription(
+    spec: *const OptionSpec,
+    tz_label: []const u8,
+    buffer: []u8,
+) []const u8 {
     return switch (spec.id) {
         .tz => std.fmt.bufPrint(
             buffer,
@@ -341,7 +345,12 @@ fn optionDescription(spec: *const OptionSpec, tz_label: []const u8, buffer: []u8
     };
 }
 
-fn printOptionLine(writer: anytype, spec: *const OptionSpec, desc: []const u8, max_label: usize) !void {
+fn printOptionLine(
+    writer: *std.Io.Writer,
+    spec: *const OptionSpec,
+    desc: []const u8,
+    max_label: usize,
+) !void {
     try writer.writeAll("  ");
     try writeOptionLabel(writer, spec);
     const label_len = optionLabelLength(spec);
@@ -350,7 +359,7 @@ fn printOptionLine(writer: anytype, spec: *const OptionSpec, desc: []const u8, m
     try writer.print("  {s}\n", .{desc});
 }
 
-fn writeOptionLabel(writer: anytype, spec: *const OptionSpec) !void {
+fn writeOptionLabel(writer: *std.Io.Writer, spec: *const OptionSpec) !void {
     if (spec.short_name) |short| {
         try writer.print("-{c}", .{short});
         if (spec.long_name.len != 0) {

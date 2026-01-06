@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const Context = @import("Context.zig");
 const http_client = @import("http_client.zig");
 const HttpResponse = http_client.Response;
 const identity = @import("identity.zig");
@@ -23,21 +24,19 @@ const UploadError = error{
 };
 
 pub fn run(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    environ_map: *const std.process.Environ.Map,
+    ctx: Context,
     providers: []const ProviderUpload,
     timezone_offset_minutes: i32,
 ) !void {
-    var env_cfg = try EnvConfig.load(allocator, environ_map);
-    defer env_cfg.deinit(allocator);
+    var env_cfg = try EnvConfig.load(ctx);
+    defer env_cfg.deinit(ctx.allocator);
 
     if (env_cfg.api_key.len == 0) reportMissingApiKey();
 
-    const endpoint = try buildEndpoint(allocator, env_cfg.api_url);
-    defer allocator.free(endpoint);
+    const endpoint = try buildEndpoint(ctx.allocator, env_cfg.api_url);
+    defer ctx.allocator.free(endpoint);
 
-    const machine = try machine_id.getMachineId(allocator, io, environ_map);
+    const machine = try machine_id.getMachineId(ctx);
     const machine_slice = machine[0..];
     std.log.debug("Machine ID: {s}", .{machine_slice});
 
@@ -46,12 +45,12 @@ pub fn run(
     var tz_label_buf: [16]u8 = undefined;
     const timezone_label = timeutil.formatTimezoneLabel(&tz_label_buf, timezone_offset_minutes);
 
-    const payload = try buildUploadPayload(allocator, environ_map, machine_slice, providers, timezone_label);
-    defer allocator.free(payload);
+    const payload = try buildUploadPayload(ctx, machine_slice, providers, timezone_label);
+    defer ctx.allocator.free(payload);
 
     std.log.info("Uploading summary to {s}...", .{endpoint});
     var upload_timer: std.time.Timer = try .start();
-    var response = sendPayload(allocator, endpoint, env_cfg.api_key, payload) catch |err| {
+    var response = sendPayload(ctx.allocator, endpoint, env_cfg.api_key, payload) catch |err| {
         std.log.err("Connection failed. Is the server running at {s}? ({s})", .{ env_cfg.api_url, @errorName(err) });
         return err;
     };
@@ -65,14 +64,14 @@ const EnvConfig = struct {
     api_url: []const u8,
     api_key: []const u8,
 
-    fn load(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) !EnvConfig {
-        const raw_url = environ_map.get("DASHBOARD_API_URL") orelse DEFAULT_API_URL;
+    fn load(ctx: Context) !EnvConfig {
+        const raw_url = ctx.environ_map.get("DASHBOARD_API_URL") orelse DEFAULT_API_URL;
         const trimmed_url = std.mem.trim(u8, raw_url, " \n\r\t");
-        const api_url = try allocator.dupe(u8, trimmed_url);
+        const api_url = try ctx.allocator.dupe(u8, trimmed_url);
 
-        const raw_key = environ_map.get("DASHBOARD_API_KEY") orelse "";
+        const raw_key = ctx.environ_map.get("DASHBOARD_API_KEY") orelse "";
         const trimmed_key = std.mem.trim(u8, raw_key, " \n\r\t");
-        const api_key = try allocator.dupe(u8, trimmed_key);
+        const api_key = try ctx.allocator.dupe(u8, trimmed_key);
 
         return .{ .api_url = api_url, .api_key = api_key };
     }
@@ -123,23 +122,22 @@ fn buildEndpoint(allocator: std.mem.Allocator, base: []const u8) ![]u8 {
 }
 
 fn buildUploadPayload(
-    allocator: std.mem.Allocator,
-    environ_map: *const std.process.Environ.Map,
+    ctx: Context,
     machine: []const u8,
     providers: []const ProviderUpload,
     timezone_label: []const u8,
 ) ![]u8 {
-    const timestamp = try timeutil.currentTimestampIso8601(allocator);
-    defer allocator.free(timestamp);
+    const timestamp = try timeutil.currentTimestampIso8601(ctx.allocator);
+    defer ctx.allocator.free(timestamp);
 
-    const hostname = try identity.getHostname(allocator, environ_map);
-    defer allocator.free(hostname);
+    const hostname = try identity.getHostname(ctx);
+    defer ctx.allocator.free(hostname);
 
-    const username = try identity.getUsername(allocator, environ_map);
-    defer allocator.free(username);
+    const username = try identity.getUsername(ctx);
+    defer ctx.allocator.free(username);
 
-    const display_name = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ username, hostname });
-    defer allocator.free(display_name);
+    const display_name = try std.fmt.allocPrint(ctx.allocator, "{s}@{s}", .{ username, hostname });
+    defer ctx.allocator.free(display_name);
 
     const payload = Payload{
         .timestamp = timestamp,
@@ -152,11 +150,11 @@ fn buildUploadPayload(
     std.log.debug("Payload timestamp (UTC): {s} | timezone: {s}", .{ timestamp, timezone_label });
 
     var buffer = std.ArrayList(u8).empty;
-    defer buffer.deinit(allocator);
-    var writer_state = io_util.ArrayWriter.init(&buffer, allocator);
+    defer buffer.deinit(ctx.allocator);
+    var writer_state = io_util.ArrayWriter.init(&buffer, ctx.allocator);
     var stringify = std.json.Stringify{ .writer = writer_state.writer(), .options = .{} };
     try stringify.write(payload);
-    return buffer.toOwnedSlice(allocator);
+    return buffer.toOwnedSlice(ctx.allocator);
 }
 
 fn trimTrailingSlash(value: []const u8) []const u8 {

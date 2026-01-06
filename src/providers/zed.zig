@@ -3,8 +3,7 @@ const testing = std.testing;
 const assert = std.debug.assert;
 const builtin = @import("builtin");
 
-const ctxmod = @import("../context.zig");
-const Context = ctxmod.Context;
+const Context = @import("../Context.zig");
 
 const model = @import("../model.zig");
 const UsageAccumulator = model.UsageAccumulator;

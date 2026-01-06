@@ -1,8 +1,6 @@
 const std = @import("std");
 
-const ctxmod = @import("../context.zig");
-const Context = ctxmod.Context;
-
+const Context = @import("../Context.zig");
 const http_client = @import("../http_client.zig");
 const io_util = @import("../io_util.zig");
 const model = @import("../model.zig");
