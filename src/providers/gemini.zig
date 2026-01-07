@@ -168,7 +168,7 @@ fn parseSessionFile(
                     .cached_input_tokens = tok.cached orelse 0,
                     .output_tokens = (tok.output orelse 0) + (tok.tool orelse 0),
                     .reasoning_output_tokens = tok.thoughts orelse 0,
-                    .total_tokens = tok.total orelse 0,
+                    .total_tokens = 0,
                 };
                 if (usage_raw.total_tokens == 0) {
                     usage_raw.total_tokens =
